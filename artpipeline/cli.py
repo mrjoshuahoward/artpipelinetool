@@ -30,8 +30,7 @@ def parse(ctx, brief):
     try:
         raw = parser.parse_brief(brief)
     except ValueError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
+        raise click.ClickException(str(e))
 
     pipeline_path = brief.parent / "pipeline.json"
 
@@ -40,8 +39,8 @@ def parse(ctx, brief):
         try:
             existing_manifest = manifest.load(pipeline_path)
             existing = existing_manifest.assets
-        except Exception:
-            pass
+        except (ValueError, KeyError, TypeError) as e:
+            click.echo(f"Warning: could not read existing pipeline.json ({e}), starting fresh.", err=True)
 
     assets = {}
     for entry in raw.get("assets", []):
