@@ -11,7 +11,7 @@ class Asset:
     status: str
     type: str
     destination: str
-    dimensions: list
+    dimensions: list[int]
     prompt: str
     acceptance_criteria: list
     rejection_reason: Optional[str] = None
@@ -26,7 +26,7 @@ class Manifest:
     brief: str
     project: str
     direction: str
-    assets: dict = field(default_factory=dict)
+    assets: dict[str, Asset] = field(default_factory=dict)
 
     def get_asset(self, asset_id: str) -> Asset:
         if asset_id not in self.assets:
