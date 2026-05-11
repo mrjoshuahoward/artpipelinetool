@@ -40,3 +40,21 @@ def test_extract_from_text():
     data = parser.extract_asset_manifest(text)
     assert data["project"] == "Foo"
     assert data["assets"] == []
+
+
+def test_crlf_line_endings(tmp_project):
+    """Brief with Windows CRLF line endings must parse correctly."""
+    text = (
+        "# Brief\r\n\r\n## Asset Manifest\r\n```yaml\r\n"
+        "project: Foo\r\ndirection: Bar\r\nassets: []\r\n"
+        "```\r\n"
+    )
+    data = parser.extract_asset_manifest(text)
+    assert data["project"] == "Foo"
+
+
+def test_empty_yaml_block_raises(tmp_project):
+    """An empty YAML block raises a clear ValueError."""
+    text = "# Brief\n\n## Asset Manifest\n```yaml\n```\n"
+    with pytest.raises(ValueError, match="did not parse to a mapping"):
+        parser.extract_asset_manifest(text)

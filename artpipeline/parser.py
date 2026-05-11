@@ -4,7 +4,7 @@ import yaml
 from pathlib import Path
 
 MANIFEST_HEADING = "## Asset Manifest"
-_YAML_FENCE = re.compile(r"```yaml\n(.*?)```", re.DOTALL)
+_YAML_FENCE = re.compile(r"```yaml[ \t]*\r?\n(.*?)```", re.DOTALL)  # handles CRLF and trailing spaces
 
 
 def extract_asset_manifest(text: str) -> dict:
@@ -21,7 +21,12 @@ def extract_asset_manifest(text: str) -> dict:
         raise ValueError(
             f"Found '{MANIFEST_HEADING}' but no fenced YAML block follows it."
         )
-    return yaml.safe_load(match.group(1))
+    result = yaml.safe_load(match.group(1))
+    if not isinstance(result, dict):
+        raise ValueError(
+            f"Fenced YAML block under '{MANIFEST_HEADING}' did not parse to a mapping."
+        )
+    return result
 
 
 def parse_brief(brief_path: Path) -> dict:
