@@ -1,5 +1,6 @@
 import click
 
+
 @click.group()
 @click.option("--human", is_flag=True, help="Human-readable output (dev only)")
 @click.pass_context

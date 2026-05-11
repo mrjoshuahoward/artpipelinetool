@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "artpipeline"
 version = "0.1.0"
+description = "Art asset pipeline CLI for Claude Cowork"
 requires-python = ">=3.10"
-dependencies = ["click>=8.1"]
+dependencies = ["click>=8.1", "PyYAML>=6.0"]
 
 [project.optional-dependencies]
 review = ["Pillow>=10.0"]
-dev = ["pytest>=8.0", "click>=8.1", "Pillow>=10.0"]
+dev = ["pytest>=8.0", "click>=8.1", "Pillow>=10.0", "PyYAML>=6.0"]
 
 [project.scripts]
 artpipeline = "artpipeline.cli:main"
