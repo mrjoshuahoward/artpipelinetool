@@ -14,6 +14,8 @@ def check_dimensions(path: Path, expected: list[int]) -> Optional[bool]:
             return list(img.size) == list(expected)
     except ImportError:
         return None
+    except OSError:
+        return False
 
 
 def check_has_alpha(path: Path) -> Optional[bool]:
@@ -23,12 +25,14 @@ def check_has_alpha(path: Path) -> Optional[bool]:
             return img.mode in ("RGBA", "LA", "PA")
     except ImportError:
         return None
+    except OSError:
+        return False
 
 
-def run_checks(filed_path: Path, expected_dimensions: list[int]) -> dict:
-    exists = check_file_exists(filed_path)
+def run_checks(file_path: Path, expected_dimensions: list[int]) -> dict:
+    exists = check_file_exists(file_path)
     return {
         "file_exists": exists,
-        "dimensions_correct": check_dimensions(filed_path, expected_dimensions) if exists else None,
-        "has_alpha": check_has_alpha(filed_path) if exists else None,
+        "dimensions_correct": check_dimensions(file_path, expected_dimensions) if exists else None,
+        "has_alpha": check_has_alpha(file_path) if exists else None,
     }
