@@ -245,6 +245,74 @@ def test_review_unfiled_asset_fails(runner, pipeline_file, tmp_project, monkeypa
     assert result.exit_code != 0
 
 
+def _make_mockup_pipeline(tmp_project):
+    import json as _json
+    data = {
+        "brief": "test.md",
+        "project": "P",
+        "direction": "D",
+        "assets": {
+            "ui_rotate": {
+                "id": "ui_rotate",
+                "status": "pending",
+                "type": "ui_glyph",
+                "mockup_only": True,
+                "destination": "art/ui/rotate_mockup.png",
+                "dimensions": [96, 96],
+                "prompt": "Rotation icon.",
+                "acceptance_criteria": ["Design intent legible"],
+                "rejection_reason": None,
+                "retry_count": 0,
+                "filed_path": None,
+                "species": None,
+                "derived_resolutions": None,
+            }
+        },
+    }
+    (tmp_project / "pipeline.json").write_text(_json.dumps(data, indent=2))
+
+
+def test_mockup_file_accepts_png_for_glyph(runner, tmp_project, monkeypatch):
+    """mockup_only assets accept .png regardless of the asset's declared type."""
+    monkeypatch.chdir(tmp_project)
+    _make_mockup_pipeline(tmp_project)
+    src = tmp_project / "mockup.png"
+    src.write_bytes(b"fake png")
+    result = runner.invoke(main, ["file", str(src), "ui_rotate"], catch_exceptions=False)
+    assert result.exit_code == 0
+    dest = tmp_project / "art" / "ui" / "rotate_mockup.png"
+    assert dest.exists()
+
+
+def test_mockup_file_rejects_non_png(runner, tmp_project, monkeypatch):
+    """mockup_only assets still require .png (not .svg or other)."""
+    monkeypatch.chdir(tmp_project)
+    _make_mockup_pipeline(tmp_project)
+    src = tmp_project / "mockup.svg"
+    src.write_bytes(b"<svg/>")
+    result = runner.invoke(main, ["file", str(src), "ui_rotate"])
+    assert result.exit_code != 0
+
+
+def test_mockup_review_has_is_mockup_flag(runner, tmp_project, monkeypatch):
+    """Review output for mockup assets includes is_mockup: true."""
+    monkeypatch.chdir(tmp_project)
+    _make_mockup_pipeline(tmp_project)
+    import json as _json
+    data = _json.loads((tmp_project / "pipeline.json").read_text())
+    data["assets"]["ui_rotate"]["status"] = "filed"
+    data["assets"]["ui_rotate"]["filed_path"] = "art/ui/rotate_mockup.png"
+    art_dir = tmp_project / "art" / "ui"
+    art_dir.mkdir(parents=True)
+    (art_dir / "rotate_mockup.png").write_bytes(b"fake")
+    (tmp_project / "pipeline.json").write_text(_json.dumps(data, indent=2))
+    result = runner.invoke(main, ["review", "ui_rotate"], catch_exceptions=False)
+    assert result.exit_code == 0
+    output = json.loads(result.output)
+    assert output.get("is_mockup") is True
+    assert output["checks"]["has_alpha"] is None  # skipped for mockups
+
+
 def test_review_app_icon_has_alpha_skipped(runner, tmp_project, monkeypatch):
     """Review of an app_icon should not check for alpha channel."""
     monkeypatch.chdir(tmp_project)

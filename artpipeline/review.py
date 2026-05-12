@@ -31,8 +31,9 @@ def check_has_alpha(path: Path) -> Optional[bool]:
 
 def run_checks(file_path: Path, expected_dimensions: list[int], asset_type: str = None) -> dict:
     exists = check_file_exists(file_path)
-    # app_icon assets must NOT have alpha (App Store requirement); skip the check for them.
-    check_alpha = exists and asset_type != "app_icon"
+    # app_icon assets must NOT have alpha (App Store requirement).
+    # mockup assets are PNG design references, not production files — alpha is irrelevant.
+    check_alpha = exists and asset_type not in ("app_icon", "mockup")
     return {
         "file_exists": exists,
         "dimensions_correct": check_dimensions(file_path, expected_dimensions) if exists else None,

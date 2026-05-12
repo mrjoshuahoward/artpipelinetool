@@ -169,11 +169,24 @@ If you're producing a handoff brief (downstream agent will execute), add these s
       derived_resolutions:
         2x: {destination: art/birds/crane@2x.png, dimensions: [96, 96]}
         3x: {destination: art/birds/crane@3x.png, dimensions: [144, 144]}
+
+    # ui_glyph example — mockup_only assets:
+    - id: ui_rotate
+      type: ui_glyph
+      mockup_only: true          # cannot be produced by an image generator; files a PNG reference instead
+      destination: art/ui/rotate_mockup.png   # must end in _mockup.png
+      dimensions: [96, 96]       # large enough to serve as a clear design reference
+      prompt: "<description of what the icon should look like — no named IP>"
+      acceptance_criteria:
+        - "Icon shape is immediately recognizable and unambiguous"
+        - "Clean enough to translate directly to SVG"
+        - "Visual weight consistent with other icons in the set"
   ```
 
   Rules for the YAML block:
   - Every `id` must be unique within the manifest.
   - For bird sprites with multiple resolutions, create **one entry per species** with a `derived_resolutions` dict — do NOT create separate entries per resolution. The `artpipeline file` command auto-scales the canonical image to all derived resolutions using Pillow.
+  - For assets that cannot be produced directly by an image generator (e.g. SVG glyphs), set `mockup_only: true`. The `destination` must end in `_mockup.png`. The pipeline files a PNG design reference; the acceptance criteria assess whether that reference is legible and buildable.
   - The `prompt` field must be the complete ready-to-use image-gen prompt — not a reference to another section.
   - Do not include named commercial products, app titles, or IP in `prompt` values (e.g. do not write "in the style of [App Name]"). Name the aesthetic directly: "minimalist vector with solid fills and no gradients". Named references stall image generators.
   - The `acceptance_criteria` list must be specific and testable, not vague ("must be a recognisable silhouette at 16×16 px" not "looks good").

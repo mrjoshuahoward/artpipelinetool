@@ -21,6 +21,9 @@ class Asset:
     # Multi-resolution support: maps res_key → {destination, dimensions, filed_path}
     # The root destination/dimensions/filed_path represent the canonical (generated) resolution.
     derived_resolutions: Optional[dict] = None
+    # When True, the asset cannot be produced directly by an image generator.
+    # artpipeline files a PNG mockup instead; destination must end in _mockup.png.
+    mockup_only: bool = False
 
 
 @dataclass

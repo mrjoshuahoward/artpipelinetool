@@ -90,6 +90,7 @@ def parse(ctx, brief):
                 acceptance_criteria=entry["acceptance_criteria"],
                 species=entry.get("species"),
                 derived_resolutions=dr,
+                mockup_only=bool(entry.get("mockup_only", False)),
             )
 
     m = manifest.Manifest(
@@ -199,12 +200,18 @@ def file_cmd(ctx, image_path, asset_id):
     except KeyError as e:
         raise click.ClickException(str(e))
 
-    expected_ext = _EXPECTED_EXTENSIONS.get(a.type, ".png")
-    if image_path.suffix.lower() != expected_ext:
-        raise click.ClickException(
-            f"Wrong file extension '{image_path.suffix}' for asset type '{a.type}'. "
-            f"Expected '{expected_ext}'."
-        )
+    if a.mockup_only:
+        if image_path.suffix.lower() != ".png":
+            raise click.ClickException(
+                f"Mockup assets require a .png file; got '{image_path.suffix}'."
+            )
+    else:
+        expected_ext = _EXPECTED_EXTENSIONS.get(a.type, ".png")
+        if image_path.suffix.lower() != expected_ext:
+            raise click.ClickException(
+                f"Wrong file extension '{image_path.suffix}' for asset type '{a.type}'. "
+                f"Expected '{expected_ext}'."
+            )
 
     dest = pipeline_path.parent / a.destination
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -255,7 +262,8 @@ def review(ctx, asset_id):
         )
 
     file_path = pipeline_path.parent / a.destination
-    checks = review_mod.run_checks(file_path, a.dimensions, a.type)
+    effective_type = "mockup" if a.mockup_only else a.type
+    checks = review_mod.run_checks(file_path, a.dimensions, effective_type)
 
     output = {
         "asset_id": a.id,
@@ -263,6 +271,8 @@ def review(ctx, asset_id):
         "acceptance_criteria": a.acceptance_criteria,
         "visual_review_required": True,
     }
+    if a.mockup_only:
+        output["is_mockup"] = True
 
     # Surface derived resolution check results when available.
     if a.derived_resolutions:

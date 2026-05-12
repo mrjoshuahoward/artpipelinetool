@@ -177,6 +177,8 @@ If a check is `null` (skipped), proceed to visual review and assess that criteri
 
 **Visual review:** Open the filed image. Evaluate each item in `acceptance_criteria` against what you see. If all criteria pass, approve. If any fail, reject with a specific reason.
 
+**Mockup assets:** When `"is_mockup": true` appears in the output, the filed image is a PNG design reference, not a final production asset. `has_alpha` is always `null` (skipped). Assess the `acceptance_criteria` as you would for any visual review — the question is whether the mockup is legible and clear enough to hand off to a developer who will build the final file.
+
 ---
 
 ### 6a. Approve

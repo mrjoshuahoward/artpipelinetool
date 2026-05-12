@@ -66,6 +66,19 @@ def test_run_checks_app_icon_skips_alpha(tmp_path):
     assert result["has_alpha"] is None  # skipped, not False
 
 
+def test_run_checks_mockup_skips_alpha(tmp_path):
+    """mockup assets skip has_alpha — they are PNG references, not production files."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    img_path = tmp_path / "mockup.png"
+    img = Image.new("RGB", (96, 96), (200, 200, 200))
+    img.save(img_path)
+    result = review.run_checks(img_path, [96, 96], asset_type="mockup")
+    assert result["file_exists"] is True
+    assert result["dimensions_correct"] is True
+    assert result["has_alpha"] is None  # skipped
+
+
 def test_run_checks_bird_sprite_checks_alpha(tmp_path):
     """bird_sprite assets do require alpha; the check runs normally."""
     pytest.importorskip("PIL")
