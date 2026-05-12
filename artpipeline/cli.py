@@ -38,6 +38,62 @@ _EXPECTED_EXTENSIONS = {
     "ui_glyph": ".svg",
 }
 
+# Background-removal thresholds (per channel, 0-255).
+# Used by _process_source_image when an asset has transparent_background=True.
+# Pixels with min(R,G,B) >= _BG_OPAQUE_MAX are fully transparent.
+# Pixels in [_BG_FEATHER_MIN, _BG_OPAQUE_MAX) get a linear-ramp alpha so anti-aliased
+# silhouette edges don't show a hard halo.
+_BG_OPAQUE_MAX = 240
+_BG_FEATHER_MIN = 200
+
+
+def _process_source_image(source_path, dest_path,
+                          canonical_dims, remove_background):
+    """Resize source -> canonical and optionally key out near-white background.
+
+    Returns True if Pillow was available and the image was processed; False if
+    Pillow is not installed (caller should fall back to plain copy).
+    """
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
+        return False
+
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    try:
+        with Image.open(source_path) as src:
+            img = src.copy()
+    except (UnidentifiedImageError, OSError):
+        # Source is not a decodable image; let caller fall back to plain copy.
+        return False
+
+    target_size = tuple(canonical_dims)
+    if tuple(img.size) != target_size:
+        img = img.resize(target_size, resample)
+
+    if remove_background:
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        px = img.load()
+        w, h = img.size
+        opaque_max = _BG_OPAQUE_MAX
+        feather_min = _BG_FEATHER_MIN
+        feather_range = opaque_max - feather_min
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                m = min(r, g, b)
+                if m >= opaque_max:
+                    px[x, y] = (r, g, b, 0)
+                elif m >= feather_min:
+                    new_a = int(round((opaque_max - m) * 255 / feather_range))
+                    if new_a < a:
+                        px[x, y] = (r, g, b, new_a)
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest_path)
+    return True
+
 
 @click.group()
 @click.option("--human", is_flag=True, help="Human-readable output (dev only)")
@@ -74,7 +130,6 @@ def parse(ctx, brief):
             assets[asset_id] = existing[asset_id]
         else:
             dr = entry.get("derived_resolutions")
-            # Normalise derived_resolutions: ensure each resolution entry has a filed_path key.
             if dr:
                 dr = {
                     k: {**v, "filed_path": v.get("filed_path")}
@@ -91,6 +146,7 @@ def parse(ctx, brief):
                 species=entry.get("species"),
                 derived_resolutions=dr,
                 mockup_only=bool(entry.get("mockup_only", False)),
+                transparent_background=bool(entry.get("transparent_background", False)),
             )
 
     m = manifest.Manifest(
@@ -175,8 +231,8 @@ def prompt(ctx, asset_id, retry):
     if retry:
         reason = a.rejection_reason or "no reason recorded"
         text = (
-            f"REVISION REQUEST: The previous attempt was rejected because: \"{reason}\".\n"
-            f"Please adjust accordingly.\n\n{text}"
+            "REVISION REQUEST: The previous attempt was rejected because: \"" + reason + "\".\n"
+            "Please adjust accordingly.\n\n" + text
         )
 
     a.status = "prompted"
@@ -215,10 +271,17 @@ def file_cmd(ctx, image_path, asset_id):
 
     dest = pipeline_path.parent / a.destination
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(image_path, dest)
+
+    raster_processed = False
+    if not a.mockup_only and dest.suffix.lower() == ".png":
+        raster_processed = _process_source_image(
+            image_path, dest, a.dimensions, a.transparent_background
+        )
+    if not raster_processed:
+        shutil.copy2(image_path, dest)
+
     a.filed_path = str(a.destination)
 
-    # Auto-scale derived resolutions using Pillow when available.
     if a.derived_resolutions:
         try:
             from PIL import Image
@@ -231,7 +294,7 @@ def file_cmd(ctx, image_path, asset_id):
                     scaled.save(res_dest)
                     res_info["filed_path"] = res_info["destination"]
         except ImportError:
-            pass  # Pillow not available; only the canonical resolution was filed
+            pass
 
     a.status = "filed"
     manifest.save(m, pipeline_path)
@@ -257,7 +320,7 @@ def review(ctx, asset_id):
 
     if a.status not in ("filed", "approved", "rejected"):
         raise click.ClickException(
-            f"Asset '{asset_id}' has status '{a.status}' — it must be filed before review. "
+            f"Asset '{asset_id}' has status '{a.status}' - it must be filed before review. "
             f"Run 'artpipeline file <image> {asset_id}' first."
         )
 
@@ -274,7 +337,6 @@ def review(ctx, asset_id):
     if a.mockup_only:
         output["is_mockup"] = True
 
-    # Surface derived resolution check results when available.
     if a.derived_resolutions:
         derived_checks = {}
         for res_key, res_info in a.derived_resolutions.items():

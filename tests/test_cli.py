@@ -184,6 +184,89 @@ def test_file_wrong_extension_fails(runner, pipeline_file, tmp_project, monkeypa
     assert result.exit_code != 0
 
 
+def test_file_resizes_oversized_source_to_canonical(runner, pipeline_file, tmp_project, monkeypatch):
+    """A source image larger than canonical is LANCZOS-resized down to canonical dims."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    monkeypatch.chdir(tmp_project)
+
+    # 1024x1024 RGB source — way bigger than the 48x48 canonical
+    src = tmp_project / "oversized.png"
+    Image.new("RGB", (1024, 1024), (200, 180, 120)).save(src)
+
+    result = runner.invoke(main, ["file", str(src), "bird_crane"], catch_exceptions=False)
+    assert result.exit_code == 0
+
+    dest = tmp_project / "art" / "birds" / "crane@1x.png"
+    with Image.open(dest) as img:
+        assert list(img.size) == [48, 48]
+
+
+def test_file_preserves_alpha_when_source_has_it(runner, pipeline_file, tmp_project, monkeypatch):
+    """An RGBA source keeps its alpha channel through resize."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    monkeypatch.chdir(tmp_project)
+
+    src = tmp_project / "alpha.png"
+    Image.new("RGBA", (200, 200), (100, 50, 50, 200)).save(src)
+    runner.invoke(main, ["file", str(src), "bird_crane"], catch_exceptions=False)
+
+    dest = tmp_project / "art" / "birds" / "crane@1x.png"
+    with Image.open(dest) as img:
+        assert img.mode == "RGBA"
+
+
+def test_file_strips_near_white_background_when_flag_set(runner, tmp_project, monkeypatch):
+    """transparent_background=True converts near-white pixels to alpha=0."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    monkeypatch.chdir(tmp_project)
+
+    # Build a pipeline where bird_crane wants transparent_background processing.
+    import json as _json, copy
+    from tests.conftest import SAMPLE_MANIFEST_DATA
+    data = copy.deepcopy(SAMPLE_MANIFEST_DATA)
+    data["assets"]["bird_crane"]["transparent_background"] = True
+    (tmp_project / "pipeline.json").write_text(_json.dumps(data, indent=2))
+
+    # Half white-ish bg, half coloured silhouette.
+    src = tmp_project / "flat.png"
+    img = Image.new("RGB", (48, 48), (253, 253, 253))
+    for y in range(48):
+        for x in range(48):
+            if 16 <= x < 32 and 16 <= y < 32:
+                img.putpixel((x, y), (100, 50, 50))
+    img.save(src)
+
+    runner.invoke(main, ["file", str(src), "bird_crane"], catch_exceptions=False)
+
+    dest = tmp_project / "art" / "birds" / "crane@1x.png"
+    with Image.open(dest) as out:
+        assert out.mode == "RGBA"
+        assert out.getpixel((0, 0))[3] == 0          # near-white background → fully transparent
+        assert out.getpixel((24, 24))[3] == 255      # silhouette body → fully opaque
+
+
+def test_file_leaves_background_alone_when_flag_unset(runner, pipeline_file, tmp_project, monkeypatch):
+    """Default (no transparent_background flag): a near-white source is NOT modified."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    monkeypatch.chdir(tmp_project)
+
+    src = tmp_project / "flat.png"
+    Image.new("RGB", (200, 200), (253, 253, 253)).save(src)
+    runner.invoke(main, ["file", str(src), "bird_crane"], catch_exceptions=False)
+
+    dest = tmp_project / "art" / "birds" / "crane@1x.png"
+    with Image.open(dest) as out:
+        # Resized but not RGBA — flag is off, so no alpha key-out.
+        assert out.mode == "RGB"
+        # Pixels are still near-white, not transparent.
+        r, g, b = out.getpixel((0, 0))
+        assert r > 240 and g > 240 and b > 240
+
+
 def test_file_autoscales_derived_resolutions(runner, tmp_project, monkeypatch):
     """Filing a canonical image auto-scales and files derived resolutions via Pillow."""
     pytest.importorskip("PIL")
