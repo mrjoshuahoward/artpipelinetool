@@ -16,6 +16,9 @@ dev = ["pytest>=8.0", "click>=8.1", "Pillow>=10.0", "PyYAML>=6.0"]
 [project.scripts]
 artpipeline = "artpipeline.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["artpipeline*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
