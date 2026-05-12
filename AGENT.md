@@ -6,6 +6,22 @@ This document is the operating contract for an AI agent running the artpipeline 
 
 ## Before you start
 
+**Verify `artpipeline` is on your PATH before doing anything else.**
+
+```bash
+artpipeline --help
+```
+
+If that fails on Windows, the executable is at:
+
+```
+C:\Users\Joshu\AppData\Roaming\Python\Python314\Scripts\artpipeline.exe
+```
+
+Either add that directory to your PATH or use the full path for every command in this session.
+
+---
+
 **All commands after `parse` require your working directory to be the directory containing `pipeline.json`.** That is the same directory as the brief file. Change to it before running anything else and stay there for the entire session.
 
 ```bash
