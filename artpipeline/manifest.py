@@ -18,7 +18,9 @@ class Asset:
     retry_count: int = 0
     filed_path: Optional[str] = None
     species: Optional[str] = None
-    resolution: Optional[str] = None
+    # Multi-resolution support: maps res_key → {destination, dimensions, filed_path}
+    # The root destination/dimensions/filed_path represent the canonical (generated) resolution.
+    derived_resolutions: Optional[dict] = None
 
 
 @dataclass
@@ -37,7 +39,10 @@ class Manifest:
 
 def load(path: Path) -> Manifest:
     data = json.loads(path.read_text(encoding="utf-8"))
-    assets = {k: Asset(**v) for k, v in data["assets"].items()}
+    assets = {}
+    for k, v in data["assets"].items():
+        v.pop("resolution", None)  # drop deprecated per-resolution field if present
+        assets[k] = Asset(**v)
     return Manifest(
         brief=data["brief"],
         project=data["project"],

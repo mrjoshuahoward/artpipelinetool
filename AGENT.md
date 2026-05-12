@@ -12,13 +12,19 @@ This document is the operating contract for an AI agent running the artpipeline 
 artpipeline --help
 ```
 
-If that fails on Windows, the executable is at:
+If that fails, the tool was installed with `pip install -e .` from the artpipeline repo. Check where pip installed it:
+
+```bash
+pip show artpipeline   # look at "Location"; the script is in the adjacent Scripts/ or bin/ directory
+```
+
+**Windows fallback** — if PATH is not set up, the executable is at:
 
 ```
 C:\Users\Joshu\AppData\Roaming\Python\Python314\Scripts\artpipeline.exe
 ```
 
-Either add that directory to your PATH or use the full path for every command in this session.
+Either add the Scripts directory to your PATH or use the full path for every command in this session.
 
 ---
 
@@ -47,7 +53,7 @@ Creates `pipeline.json` alongside the brief. Safe to re-run against an updated b
   "direction": "TestDir",
   "pipeline": "pipeline.json",
   "assets": [
-    {"id": "bird_crane_1x", "type": "bird_sprite", "status": "pending"}
+    {"id": "bird_crane", "type": "bird_sprite", "status": "pending"}
   ]
 }
 ```
@@ -66,7 +72,7 @@ artpipeline next
 
 **Output — asset available:**
 ```json
-{"asset_id": "bird_crane_1x", "status": "pending", "next_command": "artpipeline prompt bird_crane_1x"}
+{"asset_id": "bird_crane", "status": "pending", "next_command": "artpipeline prompt bird_crane"}
 ```
 
 **Output — all done:**
@@ -91,7 +97,7 @@ Updates asset status to `prompted`. Returns the full image-gen prompt text.
 **Output:**
 ```json
 {
-  "asset_id": "bird_crane_1x",
+  "asset_id": "bird_crane",
   "prompt": "Top-down silhouette of a Sandhill Crane...",
   "retry_count": 0
 }
@@ -119,7 +125,7 @@ Copies the image to its correct destination and updates status to `filed`.
 
 **Output:**
 ```json
-{"asset_id": "bird_crane_1x", "filed_path": "art/birds/crane@1x.png"}
+{"asset_id": "bird_crane", "filed_path": "art/birds/crane@1x.png"}
 ```
 
 **If this fails:** Check that the source file exists at the path you provided, and that its extension matches the asset type (`.png` for `bird_sprite` and `app_icon`; `.svg` for `ui_glyph`). The command exits non-zero with a message on stderr.
@@ -137,7 +143,7 @@ Runs programmatic checks and returns the acceptance criteria for your visual ass
 **Output:**
 ```json
 {
-  "asset_id": "bird_crane_1x",
+  "asset_id": "bird_crane",
   "checks": {
     "file_exists": true,
     "dimensions_correct": true,
@@ -181,7 +187,7 @@ artpipeline approve <asset_id>
 
 **Output:**
 ```json
-{"asset_id": "bird_crane_1x", "status": "approved"}
+{"asset_id": "bird_crane", "status": "approved"}
 ```
 
 Return to step 1.
@@ -198,7 +204,7 @@ The reason is stored and used in the retry prompt. Be specific — it becomes pa
 
 **Output:**
 ```json
-{"asset_id": "bird_crane_1x", "status": "rejected", "retry_count": 1}
+{"asset_id": "bird_crane", "status": "rejected", "retry_count": 1}
 ```
 
 Then get a revised prompt:
@@ -211,7 +217,7 @@ The retry prompt prepends a revision instruction to the original prompt using th
 
 ```json
 {
-  "asset_id": "bird_crane_1x",
+  "asset_id": "bird_crane",
   "prompt": "REVISION REQUEST: The previous attempt was rejected because: \"neck not visible at 1x scale\".\nPlease adjust accordingly.\n\nTop-down silhouette of a Sandhill Crane...",
   "retry_count": 1
 }
@@ -232,7 +238,7 @@ artpipeline status
 Returns all assets grouped by status:
 ```json
 {
-  "pending": [{"id": "bird_crane_1x", "type": "bird_sprite"}],
+  "pending": [{"id": "bird_crane", "type": "bird_sprite"}],
   "approved": [{"id": "ui_rotate", "type": "ui_glyph"}]
 }
 ```

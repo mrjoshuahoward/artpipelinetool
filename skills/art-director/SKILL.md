@@ -153,23 +153,29 @@ If you're producing a handoff brief (downstream agent will execute), add these s
   project: <project name>
   direction: <direction codename>
   assets:
-    - id: <asset_id>           # snake_case: bird_crane_1x, ui_rotate, icon_master
+    - id: <asset_id>           # snake_case: bird_crane, ui_rotate, icon_master
       type: <type>             # bird_sprite | ui_glyph | app_icon
-      destination: <path>      # relative path from project root: art/birds/crane@1x.png
-      dimensions: [w, h]       # expected pixel dimensions as integers
+      destination: <path>      # canonical (generated) destination: art/birds/crane@1x.png
+      dimensions: [w, h]       # canonical pixel dimensions as integers
       prompt: "<full image-gen prompt for this asset>"
       acceptance_criteria:
         - "<criterion 1>"
         - "<criterion 2>"
       # bird_sprite only — include these fields:
       species: <species>       # crane | snowgoose | mallard | pintail | swan
-      resolution: <res>        # 1x | 2x | 3x
+      # For multi-resolution bird sprites, list additional resolutions here.
+      # artpipeline file auto-scales the canonical to all derived resolutions via Pillow.
+      # Omit this key for single-resolution sprites.
+      derived_resolutions:
+        2x: {destination: art/birds/crane@2x.png, dimensions: [96, 96]}
+        3x: {destination: art/birds/crane@3x.png, dimensions: [144, 144]}
   ```
 
   Rules for the YAML block:
   - Every `id` must be unique within the manifest.
-  - For bird sprites with multiple resolutions, create one entry per resolution (e.g. `bird_crane_1x`, `bird_crane_2x`, `bird_crane_3x`).
-  - The `prompt` field must be the complete ready-to-use image-gen prompt for that specific asset — not a reference to another section.
+  - For bird sprites with multiple resolutions, create **one entry per species** with a `derived_resolutions` dict — do NOT create separate entries per resolution. The `artpipeline file` command auto-scales the canonical image to all derived resolutions using Pillow.
+  - The `prompt` field must be the complete ready-to-use image-gen prompt — not a reference to another section.
+  - Do not include named commercial products, app titles, or IP in `prompt` values (e.g. do not write "in the style of [App Name]"). Name the aesthetic directly: "minimalist vector with solid fills and no gradients". Named references stall image generators.
   - The `acceptance_criteria` list must be specific and testable, not vague ("must be a recognisable silhouette at 16×16 px" not "looks good").
 
 - **Minimal handoff sequence** — a numbered list of the smallest set of steps to get to a runnable visual prototype, with sign-off gates marked. The user is the dispatcher; this section is their orchestration plan.

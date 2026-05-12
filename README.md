@@ -117,26 +117,26 @@ Hand the brief and the `artpipeline` tool to your AI agent. The loop:
 
 ```bash
 artpipeline next
-# → {"asset_id": "bird_crane_1x", "next_command": "artpipeline prompt bird_crane_1x"}
+# → {"asset_id": "bird_crane", "next_command": "artpipeline prompt bird_crane"}
 
-artpipeline prompt bird_crane_1x
+artpipeline prompt bird_crane
 # → returns the full image-gen prompt; updates status to "prompted"
 
 # [ agent submits prompt to image generator, downloads result ]
 
-artpipeline file ~/Downloads/image.png bird_crane_1x
+artpipeline file ~/Downloads/image.png bird_crane
 # → copies to art/birds/crane@1x.png; updates status to "filed"
 
-artpipeline review bird_crane_1x
+artpipeline review bird_crane
 # → runs dimension/alpha checks; surfaces acceptance criteria for visual review
 
-artpipeline approve bird_crane_1x
+artpipeline approve bird_crane
 # → status: approved
 
 # — or if it doesn't pass —
 
-artpipeline reject bird_crane_1x --reason "neck not visible at 1x scale"
-artpipeline prompt bird_crane_1x --retry
+artpipeline reject bird_crane --reason "neck not visible at 1x scale"
+artpipeline prompt bird_crane --retry
 # → prompt now opens with "REVISION REQUEST: The previous attempt was rejected because..."
 ```
 
@@ -169,11 +169,10 @@ Every command reads and updates `pipeline.json`, which lives alongside the brief
   "project": "Matador",
   "direction": "Murmuration",
   "assets": {
-    "bird_crane_1x": {
+    "bird_crane": {
       "status": "filed",
       "type": "bird_sprite",
       "species": "crane",
-      "resolution": "1x",
       "destination": "art/birds/crane@1x.png",
       "dimensions": [48, 48],
       "prompt": "Top-down silhouette of a Sandhill Crane...",
@@ -182,6 +181,10 @@ Every command reads and updates `pipeline.json`, which lives alongside the brief
         "Transparent background, no halo",
         "Bird oriented facing up (north)"
       ],
+      "derived_resolutions": {
+        "2x": {"destination": "art/birds/crane@2x.png", "dimensions": [96, 96], "filed_path": "art/birds/crane@2x.png"},
+        "3x": {"destination": "art/birds/crane@3x.png", "dimensions": [144, 144], "filed_path": "art/birds/crane@3x.png"}
+      },
       "rejection_reason": null,
       "retry_count": 0,
       "filed_path": "art/birds/crane@1x.png"

@@ -6,10 +6,9 @@ SAMPLE_BRIEF_YAML = """\
 project: TestProject
 direction: TestDirection
 assets:
-  - id: bird_crane_1x
+  - id: bird_crane
     type: bird_sprite
     species: crane
-    resolution: 1x
     destination: art/birds/crane@1x.png
     dimensions: [48, 48]
     prompt: "Top-down silhouette of a Sandhill Crane viewed from above."
@@ -25,11 +24,10 @@ SAMPLE_BRIEF_TEXT = (
 )
 
 SAMPLE_ASSET = {
-    "id": "bird_crane_1x",
+    "id": "bird_crane",
     "status": "pending",
     "type": "bird_sprite",
     "species": "crane",
-    "resolution": "1x",
     "destination": "art/birds/crane@1x.png",
     "dimensions": [48, 48],
     "prompt": "Top-down silhouette of a Sandhill Crane viewed from above.",
@@ -37,13 +35,14 @@ SAMPLE_ASSET = {
     "rejection_reason": None,
     "retry_count": 0,
     "filed_path": None,
+    "derived_resolutions": None,
 }
 
 SAMPLE_MANIFEST_DATA = {
     "brief": "test-brief.md",
     "project": "TestProject",
     "direction": "TestDirection",
-    "assets": {"bird_crane_1x": SAMPLE_ASSET},
+    "assets": {"bird_crane": SAMPLE_ASSET},
 }
 
 

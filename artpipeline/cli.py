@@ -73,6 +73,13 @@ def parse(ctx, brief):
         if asset_id in existing:
             assets[asset_id] = existing[asset_id]
         else:
+            dr = entry.get("derived_resolutions")
+            # Normalise derived_resolutions: ensure each resolution entry has a filed_path key.
+            if dr:
+                dr = {
+                    k: {**v, "filed_path": v.get("filed_path")}
+                    for k, v in dr.items()
+                }
             assets[asset_id] = manifest.Asset(
                 id=asset_id,
                 status="pending",
@@ -82,7 +89,7 @@ def parse(ctx, brief):
                 prompt=entry["prompt"],
                 acceptance_criteria=entry["acceptance_criteria"],
                 species=entry.get("species"),
-                resolution=entry.get("resolution"),
+                derived_resolutions=dr,
             )
 
     m = manifest.Manifest(
@@ -202,12 +209,32 @@ def file_cmd(ctx, image_path, asset_id):
     dest = pipeline_path.parent / a.destination
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(image_path, dest)
-
     a.filed_path = str(a.destination)
+
+    # Auto-scale derived resolutions using Pillow when available.
+    if a.derived_resolutions:
+        try:
+            from PIL import Image
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            with Image.open(dest) as img:
+                for res_info in a.derived_resolutions.values():
+                    res_dest = pipeline_path.parent / res_info["destination"]
+                    res_dest.parent.mkdir(parents=True, exist_ok=True)
+                    scaled = img.resize(tuple(res_info["dimensions"]), resample)
+                    scaled.save(res_dest)
+                    res_info["filed_path"] = res_info["destination"]
+        except ImportError:
+            pass  # Pillow not available; only the canonical resolution was filed
+
     a.status = "filed"
     manifest.save(m, pipeline_path)
 
-    _emit({"asset_id": a.id, "filed_path": a.filed_path}, ctx.obj["human"])
+    output = {"asset_id": a.id, "filed_path": a.filed_path}
+    if a.derived_resolutions:
+        derived = {k: v["filed_path"] for k, v in a.derived_resolutions.items() if v.get("filed_path")}
+        if derived:
+            output["derived_filed_paths"] = derived
+    _emit(output, ctx.obj["human"])
 
 
 @main.command()
@@ -228,17 +255,28 @@ def review(ctx, asset_id):
         )
 
     file_path = pipeline_path.parent / a.destination
-    checks = review_mod.run_checks(file_path, a.dimensions)
+    checks = review_mod.run_checks(file_path, a.dimensions, a.type)
 
-    _emit(
-        {
-            "asset_id": a.id,
-            "checks": checks,
-            "acceptance_criteria": a.acceptance_criteria,
-            "visual_review_required": True,
-        },
-        ctx.obj["human"],
-    )
+    output = {
+        "asset_id": a.id,
+        "checks": checks,
+        "acceptance_criteria": a.acceptance_criteria,
+        "visual_review_required": True,
+    }
+
+    # Surface derived resolution check results when available.
+    if a.derived_resolutions:
+        derived_checks = {}
+        for res_key, res_info in a.derived_resolutions.items():
+            fp = res_info.get("filed_path")
+            if fp:
+                derived_checks[res_key] = review_mod.run_checks(
+                    pipeline_path.parent / fp, res_info["dimensions"], a.type
+                )
+        if derived_checks:
+            output["derived_checks"] = derived_checks
+
+    _emit(output, ctx.obj["human"])
 
 
 @main.command()

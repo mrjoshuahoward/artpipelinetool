@@ -21,7 +21,6 @@ def test_run_checks_missing_file(tmp_path):
 
 
 def test_run_checks_existing_png(tmp_path):
-    # Create a minimal valid 48x48 RGBA PNG using Pillow
     pytest.importorskip("PIL")
     from PIL import Image
     img_path = tmp_path / "test.png"
@@ -51,3 +50,28 @@ def test_run_checks_no_alpha(tmp_path):
     img.save(img_path)
     result = review.run_checks(img_path, [48, 48])
     assert result["has_alpha"] is False
+
+
+def test_run_checks_app_icon_skips_alpha(tmp_path):
+    """app_icon assets must not have alpha; the check is skipped rather than required."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    img_path = tmp_path / "icon.png"
+    # RGB (no alpha) — correct for App Store icons
+    img = Image.new("RGB", (1024, 1024), (200, 100, 50))
+    img.save(img_path)
+    result = review.run_checks(img_path, [1024, 1024], asset_type="app_icon")
+    assert result["file_exists"] is True
+    assert result["dimensions_correct"] is True
+    assert result["has_alpha"] is None  # skipped, not False
+
+
+def test_run_checks_bird_sprite_checks_alpha(tmp_path):
+    """bird_sprite assets do require alpha; the check runs normally."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+    img_path = tmp_path / "bird.png"
+    img = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
+    img.save(img_path)
+    result = review.run_checks(img_path, [48, 48], asset_type="bird_sprite")
+    assert result["has_alpha"] is True

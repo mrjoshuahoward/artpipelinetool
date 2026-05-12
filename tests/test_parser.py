@@ -6,7 +6,7 @@ def test_extract_asset_manifest(brief_file):
     data = parser.parse_brief(brief_file)
     assert data["project"] == "TestProject"
     assert len(data["assets"]) == 1
-    assert data["assets"][0]["id"] == "bird_crane_1x"
+    assert data["assets"][0]["id"] == "bird_crane"
 
 
 def test_extract_asset_fields(brief_file):
@@ -58,3 +58,26 @@ def test_empty_yaml_block_raises(tmp_project):
     text = "# Brief\n\n## Asset Manifest\n```yaml\n```\n"
     with pytest.raises(ValueError, match="did not parse to a mapping"):
         parser.extract_asset_manifest(text)
+
+
+def test_derived_resolutions_parsed(tmp_project):
+    """YAML with derived_resolutions is parsed and passed through intact."""
+    text = (
+        "# Brief\n\n## Asset Manifest\n```yaml\n"
+        "project: P\ndirection: D\nassets:\n"
+        "  - id: bird_crane\n"
+        "    type: bird_sprite\n"
+        "    species: crane\n"
+        "    destination: art/birds/crane@1x.png\n"
+        "    dimensions: [48, 48]\n"
+        "    prompt: 'test'\n"
+        "    acceptance_criteria: []\n"
+        "    derived_resolutions:\n"
+        "      2x: {destination: art/birds/crane@2x.png, dimensions: [96, 96]}\n"
+        "      3x: {destination: art/birds/crane@3x.png, dimensions: [144, 144]}\n"
+        "```\n"
+    )
+    data = parser.extract_asset_manifest(text)
+    asset = data["assets"][0]
+    assert "derived_resolutions" in asset
+    assert asset["derived_resolutions"]["2x"]["dimensions"] == [96, 96]
