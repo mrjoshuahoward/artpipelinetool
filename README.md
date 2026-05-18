@@ -1,6 +1,6 @@
 # artpipeline
 
-A Python CLI tool that gives an AI agent the operational backbone it needs to run an art asset production pipeline for casual mobile games — parsing briefs, serving prompts, filing images, and tracking per-asset status through review and approval.
+A Python CLI tool that gives an AI agent the operational backbone it needs to run an art asset production pipeline for game prototypes — parsing briefs, serving prompts, filing images, and tracking per-asset status through review and approval.
 
 ---
 
