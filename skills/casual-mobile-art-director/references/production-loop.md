@@ -54,6 +54,8 @@ register_attempt(asset_id, file, ...) → stored, processed (bg removal, trim, f
 decide(approve | reject, reason)      → rejected assets return to the queue with your reason in the next packet
 ```
 
+- **Batch it for sets.** Past a handful of assets, produce a batch, then `register_attempts` (one call, one shared route/tool) and `decide_batch`. Passing assets come back as one grid at their smallest display size, colour and greyscale, on every review background. Open a per-asset strip (in `strips`) only for anything you're unsure of. Budget turns: a 46-asset set should take a few dozen tool calls, not hundreds.
+- **Pre-check drafts for free.** `check_image(files=[draft], asset_id=...)` runs the asset's real processing and checks without using an attempt. Use it while iterating on a generator or a palette, then register the version you'd approve. Don't write your own checker or sheet script; if the tools are missing something, say so in the hand-back.
 - **Retry budget:** at most 3 attempts per asset (the brief's `max_attempts`). Each retry must change the *cause* (the subject line, a reference, a seed, the geometry) and say so in `change_from_previous`. Blind rerolls are refused. An exhausted asset is flagged for the user; move on.
 - **Judge at display size, never at generation size.** The strips are built for that. Don't zoom into the master to approve.
 - **Judge on the backgrounds the platform will use, not only the game's.** The presets already put Game Center and App Store art on iOS light and dark (`#F2F2F7`, `#1C1C1E`), and app icons get a rounded mask and a wallpaper tone. Dark-plate badges need a light rim or outer keyline to separate from dark mode.

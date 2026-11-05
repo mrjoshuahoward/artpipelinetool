@@ -163,3 +163,35 @@ def test_provisional_lock_over_mcp(tmp_path):
     assert claim.structured_content["claimed"][0]["style"]["provisional"] is True
     assert "provisional" in hb.structured_content["waiting_for_user"]
     assert (tmp_path / "badges" / "badge_00.png").is_file()  # staged on approval
+
+
+def test_batch_register_decide_and_grid(tmp_path):
+    m = make_manifest(n_assets=9, heroes=0)
+    m["assets"][0]["notes"] = "in-game title: First Shift"  # notes are allowed on assets
+    brief = write_brief(tmp_path / "brief.md", m)
+    good = make_png(tmp_path / "gen" / "a.png")
+    bad = make_png(tmp_path / "gen" / "b.png", size=(32, 32))
+    ids = [f"badge_{i:02d}" for i in range(8)]
+    init, claim, pre, reg, dec = call(
+        ("init", {"brief_path": str(brief)}),
+        ("claim", {"agent": "main", "n": 8}),
+        ("check_image", {"files": [str(bad)], "asset_id": "badge_07"}),
+        ("register_attempts", {"agent": "main", "route": "code_native", "tool": "Claude SVG",
+                               "attempts": [{"asset_id": a, "file": str(good if a != "badge_07" else bad)}
+                                            for a in ids]}),
+        ("decide_batch", {"by": "agent", "decisions": [
+            {"asset_id": "badge_00", "decision": "approve"},
+            {"asset_id": "badge_01", "decision": "reject"},            # no reason: refused, others proceed
+            {"asset_id": "badge_02", "decision": "reject", "reason": "too dark"},
+            {"asset_id": "badge_07", "decision": "approve"}]}),        # failed checks: not reviewable
+    )
+    assert not init.is_error
+    assert pre.structured_content["pass"] is False  # free pre-check against the asset's own class
+    assert claim.structured_content["claimed"][7]["attempts_used"] == 0
+    r = reg.structured_content
+    assert r["counts"] == {"awaiting_review": 7, "in_progress": 1}
+    assert kinds(reg).count("image") == 1  # one grid page, not 7 strips
+    d = dec.structured_content
+    assert d["counts"] == {"approved": 1, "error": 2, "pending": 1}
+    errs = {x["asset_id"]: x["error"] for x in d["results"] if "error" in x}
+    assert errs == {"badge_01": "REASON_REQUIRED", "badge_07": "INVALID_STATE"}

@@ -15,7 +15,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image as McpImage
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from PIL import Image
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from artpipeline import __version__
 from artpipeline.errors import PipelineError
@@ -43,6 +43,8 @@ INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typ
    pass_gate(by="user") only after they sign off.
    Approved files are copied to their destination under the root automatically (anything already
    there is moved to superseded/, never overwritten); art-manifest.json points at those copies.
+For sets larger than a handful, use register_attempts and decide_batch (one call per batch, one
+grid view of everything that passed) and check_image(asset_id=...) to pre-check drafts for free.
 4. handback() at the end. by="user" means the user said so in this conversation; never set it on
    your own judgement."""
 
@@ -102,6 +104,22 @@ def _strip_images(sheet: dict[str, Any]) -> tuple[list[Path], list[str]]:
     if len(paths) > MAX_INLINE_IMAGES:
         notes.append(f"Showing {MAX_INLINE_IMAGES} of {len(paths)} strips inline; the rest are in 'strips'.")
     return paths, notes
+
+
+GRID_AUTO = 6  # more assets than this: show the compact grid inline instead of one strip each
+
+
+def _review_images(sheet: dict[str, Any], layout: str) -> tuple[list[Path], list[str]]:
+    n = len(sheet.get("strips", {}))
+    if layout == "grid" or (layout == "auto" and n > GRID_AUTO):
+        paths = [Path(p) for p in sheet.get("grid", [])]
+        notes = [f"Grid: {n} asset(s) at their smallest display size, colour then greyscale, on each review "
+                 "background, unscaled. Per-asset strips at every display size are in 'strips'; open one "
+                 "(or call review_sheet(asset_ids=[...], layout='strips')) for anything you're unsure of."]
+        if len(paths) > MAX_INLINE_IMAGES:
+            notes.append(f"Showing {MAX_INLINE_IMAGES} of {len(paths)} grid pages inline.")
+        return paths, notes
+    return _strip_images(sheet)
 
 
 def _thumbs(paths: list[str], root: Path) -> list[Path]:
@@ -212,16 +230,77 @@ def register_attempt(
     return _call(go)
 
 
+Layout = Annotated[Literal["auto", "grid", "strips"], Field(
+    description="Inline view: 'strips' = one image per asset at every display size; 'grid' = many assets "
+    "per image at the smallest display size; 'auto' = grid when more than 6 assets")]
+
+
 @server.tool(annotations=RW)
 def review_sheet(asset_ids: list[str] | None = None,
                  pending_review: bool = False,
-                 gate_id: int | None = None) -> CallToolResult:
-    """Contact sheet of the latest attempts: shown inline as one strip per asset; full pages are saved
-    for the user (paths in 'pages'). Marks those attempts as reviewed."""
+                 gate_id: int | None = None,
+                 layout: Layout = "auto") -> CallToolResult:
+    """Contact sheet of the latest attempts, shown inline at true size; full pages are saved for the
+    user (paths in 'pages'). Marks those attempts as reviewed."""
     def go():
         sheet = _pipeline().review_sheet(asset_ids, pending_review=pending_review, gate_id=gate_id)
-        imgs, notes_ = _strip_images(sheet)
+        imgs, notes_ = _review_images(sheet, layout)
         return _result(sheet, imgs, notes_)
+    return _call(go)
+
+
+class AttemptItem(BaseModel):
+    asset_id: str
+    file: str
+    change_from_previous: str | None = None
+    prompt: str | None = None
+    seed: str | None = None
+    notes: str | None = None
+
+
+@server.tool(annotations=RW)
+def register_attempts(
+    attempts: Annotated[list[AttemptItem], Field(description="One entry per asset you hold a lease on")],
+    agent: Agent,
+    route: Literal["code_native", "agent_app", "image_gen", "human"],
+    tool: Annotated[str, Field(description="What produced them, e.g. 'Claude SVG', 'gpt-image-2'")],
+    model: str | None = None,
+    references: list[str] | None = None,
+    rights: str | None = None,
+    preview: Annotated[bool, Field(description="Show the passing ones inline (counts as review)")] = True,
+    layout: Layout = "auto",
+) -> CallToolResult:
+    """register_attempt for a batch that shares one route/tool: each file is stored, processed and
+    checked. Returns a compact result per asset plus one review view of all that passed."""
+    def go():
+        p = _pipeline()
+        results, passing = [], []
+        for a in attempts:
+            prov = {"route": route, "tool": tool, "model": model, "prompt": a.prompt, "seed": a.seed,
+                    "references": references or [], "rights": rights, "notes": a.notes}
+            try:
+                out = p.register_attempt(a.asset_id, a.file, agent, prov, a.change_from_previous)
+            except PipelineError as e:
+                results.append({"asset_id": a.asset_id, "error": e.code, "message": e.message, "hint": e.hint})
+                continue
+            chk = out["checks"]
+            results.append({"asset_id": a.asset_id, "attempt": out["attempt"], "status": out["status"],
+                            "fail": chk.get("fail", []), "warn": chk.get("warn", []),
+                            "attempts_left": out["attempts_left"]})
+            if out["status"] == "awaiting_review":
+                passing.append(a.asset_id)
+        data: dict[str, Any] = {"results": results, "counts": {}}
+        for r in results:
+            k = r.get("status") or "error"
+            data["counts"][k] = data["counts"].get(k, 0) + 1
+        imgs, notes_ = [], []
+        if preview and passing:
+            sheet = p.review_sheet(passing, actor=agent)
+            data["sheet_id"], data["pages"] = sheet["sheet_id"], sheet["pages"]
+            imgs, notes_ = _review_images(sheet, layout)
+            data["next"] = ("Judge the passing assets on the inline view, then decide_batch. Fix failures "
+                            "and register again with change_from_previous.")
+        return _result(data, imgs, notes_)
     return _call(go)
 
 
@@ -231,6 +310,21 @@ def decide(asset_id: str, decision: Literal["approve", "reject"], by: By,
            ) -> CallToolResult:
     """Approve or reject the asset's current attempt (it must have been on a sheet or preview)."""
     return _call(lambda: _result(_pipeline().decide(asset_id, decision, by, reason)))
+
+
+class DecisionItem(BaseModel):
+    asset_id: str
+    decision: Literal["approve", "reject"]
+    reason: str | None = None
+
+
+@server.tool(annotations=RW)
+def decide_batch(decisions: Annotated[list[DecisionItem], Field(
+                     description="Rejections need a specific reason each")],
+                 by: By) -> CallToolResult:
+    """decide() for several assets at once (each must have been on a sheet or preview). A refusal is
+    reported for that asset; the rest still go through."""
+    return _call(lambda: _result(_pipeline().decide_batch([d.model_dump() for d in decisions], by)))
 
 
 @server.tool(annotations=RW)
@@ -293,15 +387,23 @@ def handback() -> CallToolResult:
 
 @server.tool(annotations=RO)
 def check_image(files: list[str],
+                asset_id: Annotated[str | None, Field(
+                    description="Check against this brief asset's own class, palette and processing, "
+                    "without registering an attempt (a free pre-check). One file per call.")] = None,
                 preset: Annotated[str | None, Field(description="Preset class to judge against, e.g. game_center_badge")] = None,
                 size: Annotated[str | None, Field(description="Expected WxH")] = None,
                 alpha: Literal["required", "forbidden", "any"] | None = None,
                 palette: list[str] | None = None,
                 backgrounds: list[str] | None = None) -> CallToolResult:
-    """Stateless objective checks on any image files (no pipeline needed)."""
+    """Objective checks on image files. With asset_id: a draft is run through that asset's real
+    processing and checks without using an attempt. Without: stateless (no pipeline needed)."""
     from artpipeline.cli import run
 
     def go():
+        if asset_id:
+            p = _pipeline()
+            res = [p.preflight(asset_id, f) for f in files]
+            return _result({"pass": all(r["pass"] for r in res), "results": res})
         argv = ["check", *files]
         for flag_, val in (("--class", preset), ("--size", size), ("--alpha", alpha),
                            ("--palette", ",".join(palette) if palette else None),

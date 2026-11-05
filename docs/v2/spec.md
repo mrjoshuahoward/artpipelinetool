@@ -153,6 +153,8 @@ All tools return structured output (an output schema). Review tools also return 
 | `pass_gate(gate_id, by, notes?)` | Clear a batch or in-engine gate. |
 | `flag` / `unflag(asset_id, reason)` | Hand an asset to the human, or take it back. |
 | `place(asset_ids \| approved, target, confirm_overwrite=false)` | Write files into the engine layout (see §7). Returns the files written and anything superseded. |
+| `register_attempts(attempts[], agent, route, tool, …)` / `decide_batch(decisions[], by)` | Batch forms for large sets: one call per batch, one grid view of everything that passed. Refusals are reported per asset. |
+| `check_image(files, asset_id)` | Free pre-check: a draft through that asset's real processing and checks, no attempt used. |
 | `export_manifest()` | Write `art-manifest.json`. Also runs automatically after every decision. |
 | `handback()` | Summary: counts, final sheet, failures and flags, assets needing a human finish, and the 3–5 assets most likely to need taste revisions (ranked by attempts and warnings). |
 | `process` / `check(file, class \| options)` | Stateless utilities for one-off use outside a pipeline. These replace the skill's scripts. |

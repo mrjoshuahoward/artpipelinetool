@@ -17,7 +17,7 @@ from artpipeline import __version__
 from artpipeline import errors as E
 from artpipeline.checks import CheckContext, Checker, imaging_checker
 from artpipeline.imaging.render import RenderError, load_rgba
-from artpipeline.imaging.sheet import SheetItem, build_sheets, render_page
+from artpipeline.imaging.sheet import SheetItem, build_sheets, render_grid_pages, render_page
 from artpipeline.errors import PipelineError
 from artpipeline.intake import load_brief
 from artpipeline.schema import AssetClass, Provenance, Settings, Style
@@ -465,9 +465,16 @@ class Pipeline:
             sp = strip_dir / f"{it.label}.png"
             render_page([it]).save(sp)
             strips[it.label] = str(sp)
+        # And a compact grid: many assets per image at their smallest display size (the hard test).
+        grid = []
+        for k, page in enumerate(render_grid_pages(sheet_items, title), 1):
+            gp = strip_dir / f"grid-{k}.png"
+            page.save(gp)
+            grid.append(str(gp))
         rec = self.record_sheet(pages, ids, gate_id=gate_id, actor=actor)
         rec["pages"] = [str(p) for p in pages]
         rec["strips"] = strips
+        rec["grid"] = grid
         rec["next"] = ("Look at every page at display size (and show the user at gates), then "
                        + (f"pass_gate({gate_id}, by='user')." if gate_id is not None else "decide each asset."))
         return rec
@@ -579,6 +586,53 @@ class Pipeline:
         if gate_due:
             out["gate_due"] = gate_due
         return out
+
+    def decide_batch(self, decisions: list[dict[str, Any]], by: str) -> dict[str, Any]:
+        """Several decisions in one call. Each is its own transaction; a refusal is reported for that
+        asset and the rest still go through."""
+        results, gate_due = [], None
+        for d in decisions:
+            try:
+                out = self.decide(d["asset_id"], d["decision"], by, d.get("reason"))
+            except PipelineError as e:
+                results.append({"asset_id": d.get("asset_id"), "error": e.code, "message": e.message,
+                                "hint": e.hint})
+                continue
+            gate_due = out.pop("gate_due", None) or gate_due
+            out.pop("next", None)
+            results.append(out)
+        res: dict[str, Any] = {"results": results, "counts": {}}
+        for r in results:
+            k = r.get("status") or "error"
+            res["counts"][k] = res["counts"].get(k, 0) + 1
+        if gate_due:
+            res["gate_due"] = gate_due
+        return res
+
+    def preflight(self, asset_id: str, file: str | Path) -> dict[str, Any]:
+        """Run an asset's own processing and checks on a draft without registering an attempt."""
+        src = Path(file).expanduser()
+        if not src.is_file():
+            raise PipelineError(E.SOURCE_NOT_FOUND, f"No file at {src}.")
+        with self.store.tx() as c:
+            r = _asset(c, asset_id)
+            klass = AssetClass.model_validate(loads(r["cls"]))
+            lock = _current_lock(c)
+            style = _style(c)
+            out_dir = self.store.state_dir / "preflight" / asset_id
+            ctx = CheckContext(
+                palette=loads(lock["palette"]) if lock else style.palette,
+                backgrounds=klass.review_backgrounds or style.backgrounds,
+                out_dir=out_dir,
+                name=Path(loads(r["spec"])["destination"]).stem,
+            )
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
+        result = self.checker(src, klass, ctx)
+        d = result.to_dict()
+        return {"asset_id": asset_id, "file": str(src), "pass": d.get("pass"), "fail": d.get("fail", []),
+                "warn": d.get("warn", []), "metrics": d.get("metrics", {})}
 
     # ------------------------------------------------------------------ style lock & gates
 

@@ -80,6 +80,7 @@ class AssetSpec(_Strict):
     group: str | None = None
     references: list[str] = Field(default_factory=list)
     needs_human_finish: bool = False
+    notes: str | None = None  # free text for the producer (e.g. the in-game title, points, hidden)
     overrides: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("destination")

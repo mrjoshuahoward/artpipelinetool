@@ -119,3 +119,62 @@ def build_sheets(items: list[SheetItem], out_dir: Path, stem: str, title: str = 
         render_page(page, t).save(p)
         paths.append(p)
     return paths
+
+
+# ---------------------------------------------------------------- overview grid
+
+GRID_MAX_EDGE = 1568  # stay under the client's inline downscale limit so tiles stay at true size
+GRID_LABEL_H = 18
+
+
+def _grid_cell(it: SheetItem, size: int) -> tuple[int, int]:
+    bgs = it.backgrounds or DEFAULT_BGS
+    tile = size + 2 * MARGIN
+    return tile * len(bgs) * 2 + 6, tile + GRID_LABEL_H  # colour + greyscale per background
+
+
+def render_grid_pages(items: list[SheetItem], title: str = "") -> list[Image.Image]:
+    """Many assets per image, each at its smallest real display size on every background, in colour
+    and greyscale. Pages stay within GRID_MAX_EDGE so the model sees them unscaled."""
+    if not items:
+        return []
+    size = lambda it: min(it.sizes or DEFAULT_SIZES)  # noqa: E731
+    cw = max(_grid_cell(it, size(it))[0] for it in items) + PAD
+    ch = max(_grid_cell(it, size(it))[1] for it in items) + 8
+    header = 34 if title else 8
+    cols = max(1, (GRID_MAX_EDGE - PAD) // cw)
+    rows_per_page = max(1, (GRID_MAX_EDGE - header - PAD) // ch)
+    per_page = cols * rows_per_page
+    chunks = [items[i:i + per_page] for i in range(0, len(items), per_page)]
+    f, fs = _font(12), _font(11)
+    pages = []
+    for k, chunk in enumerate(chunks, 1):
+        n_rows = -(-len(chunk) // cols)
+        W = PAD + min(cols, len(chunk)) * cw
+        H = header + n_rows * ch + PAD
+        sheet = Image.new("RGB", (W, H), SHEET_BG)
+        d = ImageDraw.Draw(sheet)
+        if title:
+            t = f"{title}  (page {k}/{len(chunks)})" if len(chunks) > 1 else title
+            d.text((PAD, 10), t, fill=(30, 30, 30), font=_font(14))
+        for i, it in enumerate(chunk):
+            s = size(it)
+            x0 = PAD + (i % cols) * cw
+            y0 = header + (i // cols) * ch
+            label = it.label + (f"  ·  {it.sublabel}" if it.sublabel else "")
+            d.text((x0, y0), label[:60], fill=(20, 20, 20), font=f if not it.sublabel else fs)
+            x = x0
+            y = y0 + GRID_LABEL_H
+            tile = s + 2 * MARGIN
+            for fn in (lambda im: im, _grey):
+                src = fn(it.image)
+                for bg in it.backgrounds or DEFAULT_BGS:
+                    sheet.paste(hex_to_rgb(bg), (x, y, x + tile, y + tile))
+                    t = _fit(src, s, it.pixel_art)
+                    if it.icon_mask:
+                        t = _rounded(t)
+                    sheet.paste(t, (x + MARGIN + (s - t.size[0]) // 2, y + MARGIN + (s - t.size[1]) // 2), t)
+                    x += tile
+                x += 6
+        pages.append(sheet)
+    return pages
