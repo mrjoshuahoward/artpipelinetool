@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: achievement-badges-production
+expected_outcome: |
+  Runs production mode: settles preconditions from the repo, makes a 2-4 badge style-lock batch on-model with the game's palette and geometry, checks it with scripts, then produces more badges (1024x1024, no alpha) mapped to real achievement ids, with a contact sheet at display size, a manifest, and an honest hand-back flagging the unapproved lock. The game repo stays untouched.

@@ -8,3 +8,7 @@ build/
 .venv/
 venv/
 docs/superpowers/
+.DS_Store
+*.skill
+skills/*/evals/results/
+.artpipeline/

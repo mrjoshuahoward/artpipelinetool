@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: meta-screens-tightening
+expected_outcome: |
+  Runs tightening mode: no alternative directions; reads META_SPEC and ART_SPEC; restates the direction, surfaces specific contradictions and risks (DOM meta screens vs canvas board seam, readability of dense meta UI in a grimy palette, safe areas, whether native/system chrome or Liquid Glass appears, WKWebView perf), lists the questions it would ask, then delivers a discussion brief marked as a draft with iteration handles.
