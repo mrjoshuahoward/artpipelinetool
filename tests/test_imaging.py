@@ -20,7 +20,7 @@ from artpipeline.imaging.sheet import SheetItem, _fit, build_sheets
 from artpipeline.schema import AssetClass
 from conftest import PROV, make_manifest
 
-SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "casual-mobile-art-director" / "scripts"
+SKILL_SCRIPTS = Path(__file__).resolve().parent / "reference" / "skill_scripts"
 PALETTE = ["#22B8B0", "#F2C14E", "#23282B"]
 BGS = ["#23282B", "#49606B"]
 SVG_CIRCLE = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'

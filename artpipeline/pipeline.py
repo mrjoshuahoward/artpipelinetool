@@ -16,7 +16,7 @@ from artpipeline import __version__
 from artpipeline import errors as E
 from artpipeline.checks import CheckContext, Checker, imaging_checker
 from artpipeline.imaging.render import RenderError, load_rgba
-from artpipeline.imaging.sheet import SheetItem, build_sheets
+from artpipeline.imaging.sheet import SheetItem, build_sheets, render_page
 from artpipeline.errors import PipelineError
 from artpipeline.intake import load_brief
 from artpipeline.schema import AssetClass, Provenance, Settings, Style
@@ -454,9 +454,19 @@ class Pipeline:
             ))
         stamp = self.clock().strftime("%Y%m%d-%H%M%S-%f")
         title = f"Gate {gate_id} review" if gate_id is not None else f"Review · {len(ids)} asset(s)"
-        pages = build_sheets(sheet_items, self.store.state_dir / "sheets", f"sheet-{stamp}", title)
+        sheets_dir = self.store.state_dir / "sheets"
+        pages = build_sheets(sheet_items, sheets_dir, f"sheet-{stamp}", title)
+        # One strip per asset as well: small enough to be seen inline without being downscaled.
+        strip_dir = sheets_dir / f"sheet-{stamp}"
+        strip_dir.mkdir(parents=True, exist_ok=True)
+        strips = {}
+        for it in sheet_items:
+            sp = strip_dir / f"{it.label}.png"
+            render_page([it]).save(sp)
+            strips[it.label] = str(sp)
         rec = self.record_sheet(pages, ids, gate_id=gate_id, actor=actor)
         rec["pages"] = [str(p) for p in pages]
+        rec["strips"] = strips
         rec["next"] = ("Look at every page at display size (and show the user at gates), then "
                        + (f"pass_gate({gate_id}, by='user')." if gate_id is not None else "decide each asset."))
         return rec
@@ -766,6 +776,49 @@ class Pipeline:
             events = [{"ts": e["ts"], "actor": e["actor"], "kind": e["kind"], "asset_id": e["asset_id"],
                        **loads(e["data"])} for e in q]
         return {"events": list(reversed(events))}
+
+    def handback(self, top: int = 5) -> dict[str, Any]:
+        """Summary for the user at the end of a run (or any time): what's done, what failed,
+        what needs a human, and the assets most likely to need taste revisions."""
+        with self.store.tx() as c:
+            rows = list(c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord"))
+            lock = _current_lock(c)
+            approved, flagged, unfinished, human = [], [], [], []
+            for r in rows:
+                spec = loads(r["spec"])
+                atts = _attempts(c, r["id"])
+                if r["status"] in (APPROVED, PLACED):
+                    att = _approved_attempt(c, r["id"])
+                    warns = (loads(att["checks"]) or {}).get("warn", []) if att else []
+                    approved.append({"asset_id": r["id"], "attempts": len(atts), "warnings": warns})
+                    if spec.get("needs_human_finish"):
+                        human.append(r["id"])
+                elif r["status"] == FLAGGED:
+                    last = atts[-1] if atts else None
+                    flagged.append({"asset_id": r["id"], "attempts": len(atts),
+                                    "last_reason": (last["reason"] if last else None)})
+                elif r["status"] != WAIVED:
+                    unfinished.append({"asset_id": r["id"], "status": r["status"]})
+            manifest = self._write_manifest(c)
+        candidates = sorted(approved, key=lambda a: (-a["attempts"], -len(a["warnings"])))
+        candidates = [a for a in candidates if a["attempts"] > 1 or a["warnings"]][:top]
+        out: dict[str, Any] = {
+            "counts": _counts(rows),
+            "style_lock": lock["version"] if lock else None,
+            "manifest": str(manifest),
+            "flagged": flagged,
+            "unfinished": unfinished,
+            "needs_human_finish": human,
+            "revision_candidates": [
+                {**a, "why": f"{a['attempts']} attempt(s)" + (f", {len(a['warnings'])} warning(s)"
+                                                              if a["warnings"] else "")}
+                for a in candidates
+            ],
+        }
+        if approved:
+            sheet = self.review_sheet([a["asset_id"] for a in approved], actor="handback")
+            out["final_sheet"] = sheet["pages"]
+        return out
 
     def export_manifest(self) -> dict[str, Any]:
         with self.store.tx() as c:

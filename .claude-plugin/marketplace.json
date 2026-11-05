@@ -1,0 +1,14 @@
+{
+  "name": "artpipelinetool",
+  "owner": {
+    "name": "Joshua Howard"
+  },
+  "description": "Art direction and an enforced production pipeline for casual mobile game art, for Claude Code.",
+  "plugins": [
+    {
+      "name": "artpipeline",
+      "source": "./",
+      "description": "Art direction and an enforced production pipeline for casual mobile game art."
+    }
+  ]
+}

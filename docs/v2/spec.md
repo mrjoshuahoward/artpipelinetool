@@ -201,7 +201,7 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 |---|---|---|
 | **M1 Core** ✅ 2026-11-04 | Schema, store, state machine, leases, gates, intake, CLI | Unit tests cover every transition and error code; concurrent-claim test with 8 workers |
 | **M2 Imaging** ✅ 2026-11-04 | Port and test the skill's checks, processing, exports and contact sheets; `resvg-py` rendering | Same verdicts as the skill's scripts on the eval assets. **Result:** check metrics (mean, palette share and worst ΔE, contrast) and pass/fail match the skill on the test fixtures, and Lanczos exports match pixel for pixel. Clamping differs on fewer than 2% of pixels (exact-colour cache instead of the skill's order-dependent bucketed cache). The skill's evals left no saved assets to compare, so parity was tested on fixtures. Deliberate departures: see §12 |
-| **M3 MCP + plugin** | FastMCP server, structured outputs, inline images, plugin packaging; update the skill's `production-loop.md` to use the tool | Badges eval runs end to end in Claude Code through the plugin |
+| **M3 MCP + plugin** ✅ 2026-11-04 (eval run pending) | MCP server (`mcp` 2.x `MCPServer`), structured outputs, inline images, plugin packaging; update the skill's `production-loop.md` to use the tool | Badges eval runs end to end in Claude Code through the plugin. **Done:** tools, in-process and stdio tests, `claude plugin validate`, and a headless Claude Code session using the plugin's tool. **Pending:** the badges eval itself (billed; run with the user's go-ahead) |
 | **M4 Placement** | Staging, xcassets, godot, phaser | Sorting Line badges placed into a scratch copy and verified in the simulator |
 | **M5 Eval and release** | Run the skill's evals with and without the tool; README; 2.0.0 tag | Pass rate ≥ skill alone; fewer manifest errors and gate violations; cost and time reported |
 
@@ -233,3 +233,22 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 **Still to do:**
 - A VectorCraft render backend, blocked until `vectorcraft-cli` is installed and its export syntax verified.
 - The skill's `scripts/` stay in place until M3 switches the skill to `artpipeline check / process / contact-sheet` and the MCP tools.
+
+## 13. MCP and packaging notes (M3)
+
+- **SDK:** `mcp` 2.x renamed `FastMCP` to `MCPServer`. Tools build `CallToolResult` directly: structured content, a text copy, and image blocks. Refusals are `is_error` results carrying the error code and hint. `by` parameters are typed: `Literal["user"]` for lock, gate and unflag; `"user" | "agent"` for decide and flag.
+- **Images:**
+  - The model sees one strip per asset, not the full page. Images with a long edge over 1,568 px are scaled down by the client, which would make tiles lie about size. Full pages are saved for the user.
+  - `register_attempt` returns the asset's strip by default, and that counts as review.
+  - `claim` shows up to 4 locked reference images as 384 px thumbnails.
+- **Finding the pipeline:**
+  1. the session's `init` / `open_pipeline`;
+  2. otherwise `ARTPIPELINE_ROOT`;
+  3. otherwise `CLAUDE_PROJECT_DIR`, searching up and up to two levels down (refused if ambiguous).
+- **Packaging:**
+  - The repo root is the plugin and its own marketplace (`"source": "./"`).
+  - `.mcp.json` launches `bin/artpipeline-mcp`. That script runs `bin/artpipeline-bootstrap`, which builds a venv in `${CLAUDE_PLUGIN_DATA}` (persistent across updates) and rebuilds when the plugin path or source hash changes. Concurrent setup is serialised with a lock folder.
+  - A `SessionStart` hook warms the same venv. The docs don't say whether hooks finish before MCP servers start, so both paths exist.
+  - Nothing ever writes to stdout.
+  - Measured: first setup 5.9 s with a warm pip cache, then 19 ms.
+- **The skill's scripts** moved to `tests/reference/skill_scripts/`, kept only for the parity tests.

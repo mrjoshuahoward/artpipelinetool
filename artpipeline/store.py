@@ -136,6 +136,16 @@ class Store:
         for d in (here, *here.parents):
             if (d / STATE_DIR / DB_NAME).is_file():
                 return cls(d)
+        # Also look a little way down (e.g. <project>/art/.artpipeline); use it only if unambiguous.
+        below = sorted({p.parent.parent for pat in (f"*/{STATE_DIR}/{DB_NAME}", f"*/*/{STATE_DIR}/{DB_NAME}")
+                        for p in here.glob(pat)})
+        if len(below) == 1:
+            return cls(below[0])
+        if len(below) > 1:
+            raise PipelineError(
+                E.NO_PIPELINE, f"Several pipelines under {here}: {[str(b) for b in below]}",
+                hint="Pick one with --root / open_pipeline(root).",
+            )
         raise PipelineError(
             E.NO_PIPELINE,
             f"No .artpipeline/ found in {here} or any parent folder.",

@@ -91,6 +91,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--gate", type=int, dest="gate_id")
 
     sub.add_parser("export-manifest", help="Rewrite art-manifest.json")
+    sub.add_parser("handback", help="End-of-run summary with a final contact sheet")
+    sub.add_parser("mcp", help="Run the MCP server on stdio")
 
     # Stateless utilities (no pipeline needed); they replace the skill's scripts.
     s = sub.add_parser("check", help="Objective checks on image files (exit 1 if any fail)")
@@ -218,6 +220,11 @@ def _stateless(a: argparse.Namespace) -> tuple[int, Any]:
 def run(argv: list[str] | None = None) -> tuple[int, Any]:
     a = _parser().parse_args(argv)
     try:
+        if a.cmd == "mcp":
+            from artpipeline.mcp_server import main as mcp_main
+
+            mcp_main()
+            raise SystemExit(0)  # stdout belongs to the MCP transport; print nothing
         if a.cmd in ("check", "process", "contact-sheet"):
             return _stateless(a)
         if a.cmd == "init":
@@ -251,6 +258,8 @@ def run(argv: list[str] | None = None) -> tuple[int, Any]:
             out = p.history(a.asset_id, a.limit)
         elif a.cmd == "review-sheet":
             out = p.review_sheet(a.asset_ids, pending_review=a.pending, gate_id=a.gate_id)
+        elif a.cmd == "handback":
+            out = p.handback()
         elif a.cmd == "export-manifest":
             out = p.export_manifest()
         else:  # pragma: no cover

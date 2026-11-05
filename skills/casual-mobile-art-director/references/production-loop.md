@@ -2,106 +2,90 @@
 
 Read this when the user wants you to **produce the art yourself**: generate, draw, process, check and place real asset files, rather than write a brief for someone else. This file covers how to run the loop. `ai-production-tooling.md` covers which tool to use for each asset class.
 
+The loop runs on **artpipeline**, the MCP server that ships in the same plugin as this skill. Its tools appear as `mcp__plugin_artpipeline_artpipeline__<tool>`. It stores state, attempts and provenance, processes and checks every file, renders contact sheets, and enforces the gates below so they hold across sessions and parallel subagents. You make the judgement calls; it keeps the record and refuses steps that skip a gate. Every refusal carries a `hint` naming the next valid step.
+
+If the artpipeline tools are missing (`/mcp` doesn't list `plugin:artpipeline:artpipeline`), the same operations exist as a CLI: `artpipeline <command> --help`. If neither is available, tell the user the plugin isn't installed. Don't improvise the bookkeeping by hand.
+
 ## 0. Preconditions (settle these quickly, ask only what's missing)
 
 | Need | Where it comes from | If missing |
 |---|---|---|
 | An approved direction | An art spec in the repo, a brief from this conversation, or the user's description | Run a short tightening pass first (pillars, palette, silhouette rules). Don't generate against a vague direction |
-| The asset list | The brief's inventory, or the user's request | Draft a short inventory table and confirm the **first batch** only |
-| Where files go | The user's instruction or the repo layout | Ask once. Default: the engine's real asset directories in the project. **If the user says read-only, write to a separate output folder** and hand over install steps |
-| Tools | Connected MCP tools, APIs, and local CLIs you can verify (`which inkscape rsvg-convert ffmpeg blender`) | Plan around what exists. Claude-authored SVG plus the bundled scripts always works |
+| The asset list | The brief's inventory, or the user's request | Draft the inventory and its `## Asset Manifest` (see `asset-manifest.md`). Confirm the **heroes** and the first batch |
+| Where files go | The user's instruction or the repo layout | Ask once. **If the user says read-only, set the pipeline root to a separate output folder** and hand over install steps |
+| Tools | Connected MCP tools, APIs, and local CLIs you can verify | Plan around what exists. Claude-authored SVG always works: artpipeline renders it |
 | Budget | Paid generators bill per image or credit | Estimate the count before a large batch (e.g. "46 badges × ~3 attempts ≈ 140 generations") and get a yes |
+
+Then call `init(brief_path, root)`. It is safe to re-run after editing the brief: progress is kept and changes are reported.
 
 ## 1. Style lock before volume
 
-1. **Pick 2–4 hero assets** that span the set's range (e.g. the most complex badge, the simplest, one per colour group).
-2. Produce them, run the checks (step 3), and build a **contact sheet** (`scripts/contact_sheet.py`) at real display sizes on the game's real backgrounds.
-3. **Sign-off gate:** show the user the sheet and the decisions it embodies. Only after a yes do you lock the style:
-   - **The style block:** a fixed prompt paragraph, or for code-drawn assets, a shared SVG/shader template with the stroke width, corner radius, palette tokens and light direction.
-   - **References:** the approved heroes become the reference images, style ID or trained style for everything after.
-   - **The palette file:** hexes taken from the project's source files, saved next to the assets for `--palette`.
-4. Record the lock in the manifest (step 6). From here on, every asset is generated *against* the lock, not freshly.
+1. **Heroes first.** `claim` hands out only `hero: true` assets until the style is locked. Pick 2–4 that span the set's range.
+2. Produce them (step 2), `register_attempt` each one, and look at the returned strips: true display sizes on the real backgrounds, plus a greyscale row.
+3. **Sign-off gate:** show the user the hero strips (or `review_sheet` of the heroes; the full page paths are in `pages`) and the decisions they embody: palette, keyline, light direction, rendering. Approve each hero with `decide(..., by="user")` only for what the user actually approved.
+4. `lock_style(by="user", style_block=..., palette=...)` only after the user says yes. The approved heroes become the references in every later work packet, and are shown inline when a worker claims.
 
-If the user is away or explicitly says "just make them", still make the heroes first, check them yourself, and say in the hand-back that the remaining batch was generated against a lock that hasn't been approved.
+If the user is away or says "just make them", still make the heroes and check them yourself, then stop at the lock. `lock_style` needs the user. Say what is waiting for them.
+
+Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review.
 
 ## 2. Choose the production route per asset
 
 Prefer, in order (pick the first that can hit the style):
 
-1. **Code-native:** an SVG you write directly, the engine's procedural drawing code, a shader, or particles. It's free, deterministic, always on-palette and easy to revise. Most flat, vector, geometric, icon, badge and UI work belongs here. If the game already draws its pieces in code (as many Phaser and Godot games do), **reuse that geometry** so store art and badges stay on-model.
+1. **Code-native:** an SVG you write directly, the engine's procedural drawing code, a shader, or particles. It's free, deterministic, always on-palette and easy to revise. Most flat, vector, geometric, icon, badge and UI work belongs here. If the game already draws its pieces in code (as many Phaser and Godot games do), **reuse that geometry** so store art and badges stay on-model. Register the SVG even for PNG classes; artpipeline renders it at the master size.
 2. **Agent-driven app:** VectorCraft, PhotoCraft or EffectCraft MCP, the Blender connector, Figma or Canva. Use these when you need the app's operations (boolean ops, PSD layering, Lottie export, 3D renders, layout templates).
-3. **Image generation:** painterly, illustrated, photographic or textural looks that code can't reach; volume after a style lock; hero drafts that a human will finish. Give it a real role when the style calls for it. Don't confine it to concepts out of caution. Always follow generation with steps 3–4.
+3. **Image generation:** painterly, illustrated, photographic or textural looks that code can't reach; volume after a style lock; hero drafts that a human will finish. Give it a real role when the style calls for it. Don't confine it to concepts out of caution. Use the work packet's `style.block` plus the asset's `subject`, and pass the lock's references to generators that take them.
 
-## 3. Generate → check → fix (per asset, scripted where possible)
+Record the route honestly in `register_attempt` (`route`, `tool`, `model`, `prompt`, `seed`, `references`, `rights`). That provenance is what makes regeneration and rights questions answerable later.
+
+## 3. Generate → check → fix (per asset)
 
 ```
-generate / draw
-  → post-process: background removal if needed, trim, palette_clamp.py (flat styles: hard; painterly: --soft 0.3)
-  → export_sizes.py to the engine's sizes (@2x/@3x, atlas frames, 1024 store art; --flatten for no-alpha targets)
-  → check_asset.py: size, alpha rules, halo, palette share, contrast vs real backgrounds (non-zero exit = fail)
-  → look at it: render on the contact sheet at the real in-game size; check the silhouette in greyscale
-  → pass? next asset : fix the cause and retry
+claim(agent, n)                       → work packets: style lock, palette, sizes, criteria, earlier attempts + reasons
+produce the file                      → code / app / generator (generate large; on a flat chroma colour if no native alpha)
+register_attempt(asset_id, file, ...) → stored, processed (bg removal, trim, fit, flatten, palette clamp per the class),
+                                        renditions exported, objectively checked
+  checks fail  → you still hold it: fix the cause, register again with change_from_previous
+  checks pass  → a strip at true display sizes comes back: look at it, then
+decide(approve | reject, reason)      → rejected assets return to the queue with your reason in the next packet
 ```
 
-- **Retry budget:** at most 3 attempts per asset, changing the *cause* each time (the prompt subject line, the reference, a seed, or the geometry), not rerolling blindly. After 3, flag the asset for the user, with the attempts on a sheet.
-- **Judge at display size, never at generation size.** A badge seen at 64 px gets judged at 64 px.
-- **Judge on the backgrounds the platform will use, not only the game's.** Game Center and the App Store show art on iOS light and dark system backgrounds (around `#F2F2F7` and `#1C1C1E`); app icons sit on arbitrary wallpapers. Put those on every contact sheet. Dark-plate badges need a light rim or outer keyline to separate from dark mode.
-- **Hard checks come from the platform and the brief:**
-  - App Store icon, screenshots and Game Center art have no alpha.
-  - Icon layers have crisp edges and no baked gloss.
-  - Sprites have transparent corners.
-  - Silhouettes must read in greyscale.
-  - Each asset must clear the brief's own acceptance criteria.
-- Never AI-upscale pixel art; `export_sizes.py --pixel` scales with nearest-neighbour at integer factors.
+- **Retry budget:** at most 3 attempts per asset (the brief's `max_attempts`). Each retry must change the *cause* (the subject line, a reference, a seed, the geometry) and say so in `change_from_previous`. Blind rerolls are refused. An exhausted asset is flagged for the user; move on.
+- **Judge at display size, never at generation size.** The strips are built for that. Don't zoom into the master to approve.
+- **Judge on the backgrounds the platform will use, not only the game's.** The presets already put Game Center and App Store art on iOS light and dark (`#F2F2F7`, `#1C1C1E`), and app icons get a rounded mask and a wallpaper tone. Dark-plate badges need a light rim or outer keyline to separate from dark mode.
+- **What the objective checks cover** (failures block approval): size, the alpha rule (no alpha for App Store icons, screenshots and Game Center art; transparent corners for sprites), matte halos, palette share, and any processing refusal (no raster upscaling; integer factors for pixel art). Warnings (low contrast against a background, hue-only contrast that vanishes in greyscale) are yours to weigh on the strip.
+- **The acceptance criteria are yours to judge.** Check each one against the strip before approving. Reject with the specific criterion that failed.
+- Never AI-upscale pixel art. The `pixel_sprite` preset scales nearest-neighbour at integer factors only.
+
+**Parallel workers.** For large sets, give each subagent its own `agent` label and have it `claim` its own batch. Leases keep two workers off the same asset. Decisions that need the user (`lock_style`, `pass_gate`, `unflag`) stay with the main conversation.
 
 ## 4. Human-finishing flags
 
-Mark any asset where human authorship matters (app icon, mascot, key art) as `needs-human-finish` in the manifest. That isn't an App Store rule. It matters for copyright and IP protection, and for the "doesn't look generated" bar. Code-native and Claude-authored SVG assets don't need the flag for originality reasons, but they still need the user's taste sign-off at the gates.
+Set `needs_human_finish: true` in the manifest for any asset where human authorship matters (app icon, mascot, key art). That isn't an App Store rule. It matters for copyright and IP protection, and for the "doesn't look generated" bar. `handback` lists these. Code-native and Claude-authored SVG assets don't need the flag for originality reasons, but they still need the user's taste sign-off at the gates.
 
 ## 5. Integrate and verify in the engine
 
 The asset isn't done until it looks right **in the game**:
 
-- **Place files** where the engine expects them:
-  - Asset catalog image sets with `Contents.json`.
-  - Godot import presets.
-  - A Phaser atlas plus its preload-manifest entry.
-  - For the app icon, the Icon Composer layer files.
+- **Place files** where the engine expects them: asset catalog image sets with `Contents.json`, Godot import presets, a Phaser atlas plus its preload-manifest entry, or the Icon Composer layer files for the app icon. The processed master and renditions for each approved asset are listed in `art-manifest.json` (`approved.file`, `approved.renditions`). Until artpipeline's placement tools land, copy from there.
 - **Pack atlases** (TexturePacker CLI, or the engine's own packer) when the set is final.
 - **Screenshot in context:**
   - Phaser: the dev server plus Playwright on the real canvas.
   - Godot: the Godot MCP or a headless run.
   - Native: the iOS simulator.
-- **Compare against the contact-sheet expectation.** Watch for resolution softness (the DPR cap), wrong import filters, premultiplied-alpha fringes and colour-space shifts.
-- **Read-only repo:** do everything in the output folder, write `INSTALL.md` with exact copy steps and any config changes, and verify against a scratch copy or a branch the user owns. Never touch their working tree.
+- **Compare against the strips.** Watch for resolution softness (the DPR cap), wrong import filters, premultiplied-alpha fringes and colour-space shifts.
+- **Read-only repo:** keep the pipeline root in a separate output folder, write `INSTALL.md` with exact copy steps and any config changes, and verify against a scratch copy or a branch the user owns. Never touch their working tree.
+- **Don't overwrite existing art without confirmation.** Move superseded files to `superseded/` until the user approves.
 
-## 6. Manifest (always write one)
+## 6. Manifest
 
-`art-manifest.json` (or `.md`) next to the assets, with one row per file:
-
-```json
-{ "file": "badges/sortingline.first_shift.png", "size": "1024x1024", "route": "code-native SVG",
-  "tool": "Claude SVG + export_sizes.py", "prompt_or_source": "badge-template.svg, glyph=hardhat",
-  "model": null, "seed": null, "style_lock": "v1 (approved 2026-11-04)",
-  "checks": "check_asset pass; contact sheet v3", "status": "approved | pending | needs-human-finish",
-  "rights": "original (code-authored)" }
-```
-
-The manifest makes regeneration reproducible, supports rights questions (which model and which terms), and is how the user audits a 46-item batch without opening 46 files.
+artpipeline writes `art-manifest.json` at the pipeline root after every decision. Each entry records the asset's status, the approved file and renditions, route, tool, model, prompt, seed, references, rights, check results, style-lock version and who approved it. Don't hand-write a manifest. If you need extra fields, put them in `rights` or `notes` on the attempt. `history(asset_id)` shows the full event log.
 
 ## 7. Review gates and hand-back
 
-- **Gates:** style lock (step 1), first full batch (a contact sheet of everything), in-engine screenshot (step 5). Never more than about 15 new assets between gates without a sheet.
-- **Hand-back:** a contact sheet, the manifest, the in-engine screenshot, a list of failures and flags, and the 3–5 assets most likely to need taste revisions. Revisions update files in place and append to the manifest. Don't fork copies.
-- **Don't overwrite existing art without confirmation.** Version superseded files (`_v1`) or move them to `superseded/` until the user approves.
-
-## Bundled scripts (Pillow; SVG via rsvg-convert, Inkscape, cairosvg or Playwright, whichever exists)
-
-| Script | Use |
-|---|---|
-| `scripts/contact_sheet.py out.png a.svg b.png --sizes 256,64,24 --bg "#23282B,#49606B" [--icon-mask]` | Review sheet at true sizes on real backgrounds, plus a greyscale row |
-| `scripts/check_asset.py *.png --palette pal.txt --bg ... [--expect-alpha / --no-alpha] [--size 1024x1024]` | Objective gate; JSON out, non-zero exit on fail |
-| `scripts/palette_clamp.py in.png out.png --palette pal.txt [--soft 0.3]` | Snap generator drift to the brief palette |
-| `scripts/export_sizes.py master.svg out/ --name x --points 44` or `--px 512,1024 [--pixel] [--flatten "#hex"]` | Engine and store sizes; re-rasterises SVG per size; refuses raster upscales |
-
-Run them with the skill's `scripts/` directory as the working directory, or by absolute path (they import `_common.py` from beside themselves).
+- **Gates:**
+  - The style lock (step 1).
+  - A **batch gate** every `gate_threshold` approvals (default 15). `decide` returns `gate_due`, and `claim` refuses until it passes. Build `review_sheet(gate_id=...)`, show the user (give them the `pages` paths), and call `pass_gate(by="user")` only after they sign off.
+  - The in-engine screenshot (step 5).
+- **Hand-back:** call `handback()`. It returns counts, flagged and unfinished assets, `needs_human_finish` items, the 3–5 likeliest taste-revision candidates (by attempts and warnings), the manifest path, and a final contact sheet. Add the in-engine screenshot. Revisions go through the same loop: claim, register a new attempt, decide. History is kept; nothing is forked.

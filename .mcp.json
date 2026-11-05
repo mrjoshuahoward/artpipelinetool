@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "artpipeline": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/artpipeline-mcp",
+      "args": [],
+      "env": {
+        "ARTPIPELINE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "ARTPIPELINE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}
