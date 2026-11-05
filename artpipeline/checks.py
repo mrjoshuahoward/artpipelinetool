@@ -90,7 +90,7 @@ def imaging_checker(source: Path, cls: AssetClass, ctx: CheckContext) -> CheckRe
                 warn.append("palette_clamp requested but no palette is set (brief style or lock)")
             img = post(img)
             processed = ctx.out_dir / f"{ctx.name}.{cls.format}"
-            _save(img, processed, cls.format)
+            _save(img, processed, cls.format, cls.alpha)
 
         rerender = cls.is_vector or (svg_src and not p.trim)
         for r in cls.renditions:
@@ -104,7 +104,7 @@ def imaging_checker(source: Path, cls: AssetClass, ctx: CheckContext) -> CheckRe
             fmt = "png" if cls.is_vector else cls.format
             rpath = ctx.out_dir / "renditions" / f"{ctx.name}{r.suffix}.{fmt}"
             rpath.parent.mkdir(exist_ok=True)
-            _save(rimg, rpath, fmt)
+            _save(rimg, rpath, fmt, cls.alpha)
             renditions[r.suffix] = rpath
     except (RenderError, ProcessError) as e:
         return CheckResult(passed=False, fail=[str(e)], warn=warn)
@@ -116,7 +116,12 @@ def imaging_checker(source: Path, cls: AssetClass, ctx: CheckContext) -> CheckRe
                        processed_path=processed, renditions=renditions)
 
 
-def _save(img: Image.Image, path: Path, fmt: str) -> None:
+def _save(img: Image.Image, path: Path, fmt: str, alpha: str = "any") -> None:
+    # Stores (App Store icons, Game Center art, screenshots) reject files that merely *have* an alpha
+    # channel, even a fully opaque one. A forbidden-alpha image that is opaque is written as plain RGB;
+    # one that isn't keeps its alpha so the failed check matches what is on disk.
+    if alpha == "forbidden" and img.mode == "RGBA" and img.getchannel("A").getextrema()[0] == 255:
+        img = img.convert("RGB")
     if fmt == "jpg":
         img.convert("RGB").save(path, "JPEG", quality=95)
     elif fmt == "webp":

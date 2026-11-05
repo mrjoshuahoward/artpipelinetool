@@ -121,6 +121,10 @@ def test_review_sheet_and_handback_return_images(tmp_path):
     assert hb["counts"] == {"pending": 1, "approved": 1}
     assert hb["unfinished"] == [{"asset_id": "badge_01", "status": "pending"}]
     assert "image" in kinds(handback) and Path(hb["final_sheet"][0]).is_file()
+    assert sheet.structured_content["shown"] == [{"sizes_px": [64, 32], "backgrounds": ["#23282B", "#49606B"],
+                                                  "greyscale": True, "icon_mask": False, "assets": 2}]
+    assert hb["assets"][0] == {"asset_id": "badge_00", "status": "approved", "attempts": 1,
+                               "file": "badges/badge_00.png", "tool": "Claude SVG", "route": "code_native"}
 
 
 def test_stateless_tools(tmp_path):

@@ -475,6 +475,13 @@ class Pipeline:
         rec["pages"] = [str(p) for p in pages]
         rec["strips"] = strips
         rec["grid"] = grid
+        views: dict[tuple, dict[str, Any]] = {}
+        for it in sheet_items:
+            key = (tuple(it.sizes), tuple(it.backgrounds))
+            v = views.setdefault(key, {"sizes_px": list(it.sizes), "backgrounds": list(it.backgrounds),
+                                       "greyscale": True, "icon_mask": it.icon_mask, "assets": 0})
+            v["assets"] += 1
+        rec["shown"] = list(views.values())
         rec["next"] = ("Look at every page at display size (and show the user at gates), then "
                        + (f"pass_gate({gate_id}, by='user')." if gate_id is not None else "decide each asset."))
         return rec
@@ -863,12 +870,24 @@ class Pipeline:
         with self.store.tx() as c:
             rows = list(c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord"))
             lock = _current_lock(c)
-            approved, flagged, unfinished, human = [], [], [], []
+            approved, flagged, unfinished, human, table = [], [], [], [], []
+            staged_main = {}
+            for x in c.execute("SELECT path, asset_id FROM staged ORDER BY path"):
+                spec_ = loads(_asset(c, x["asset_id"])["spec"])
+                if Path(x["path"]).stem == Path(spec_["destination"]).stem:
+                    staged_main[x["asset_id"]] = x["path"]
             for r in rows:
                 spec = loads(r["spec"])
                 atts = _attempts(c, r["id"])
+                att_row = _approved_attempt(c, r["id"])
+                prov = loads(att_row["provenance"]) if att_row else {}
+                table.append({
+                    "asset_id": r["id"], "status": r["status"], "attempts": len(atts),
+                    "file": (staged_main.get(r["id"]) or (att_row["processed_path"] if att_row else None)),
+                    "tool": prov.get("tool"), "route": prov.get("route"),
+                })
                 if r["status"] in (APPROVED, PLACED):
-                    att = _approved_attempt(c, r["id"])
+                    att = att_row
                     warns = (loads(att["checks"]) or {}).get("warn", []) if att else []
                     approved.append({"asset_id": r["id"], "attempts": len(atts), "warnings": warns})
                     if spec.get("needs_human_finish"):
@@ -887,6 +906,7 @@ class Pipeline:
             "style_lock": lock["version"] if lock else None,
             "style_lock_provisional": bool(lock and lock["provisional"]),
             "manifest": str(manifest),
+            "assets": table,
             "flagged": flagged,
             "unfinished": unfinished,
             "needs_human_finish": human,

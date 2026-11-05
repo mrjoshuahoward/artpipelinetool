@@ -378,3 +378,16 @@ def test_older_pipeline_is_migrated(make_pipeline, good_png, project):
     approve(p, "badge_01", good_png, by="user")
     assert p.lock_style("user")["provisional"] is False
     assert (project / "badges" / "badge_00.png").is_file()
+
+
+def test_forbidden_alpha_is_written_without_an_alpha_channel(make_pipeline, tmp_path, project):
+    """Game Center / App Store reject PNGs that have an alpha channel at all, even fully opaque."""
+    from PIL import Image
+    m = make_manifest(n_assets=1, heroes=0)
+    m["classes"]["badge"]["renditions"] = [{"suffix": "-32", "size": [32, 32]}]
+    p = make_pipeline(m)
+    src = tmp_path / "rgba-opaque.png"
+    Image.new("RGBA", (64, 64), (34, 184, 176, 255)).save(src)
+    approve(p, "badge_00", src)
+    for f in ("badges/badge_00.png", "badges/badge_00-32.png"):
+        assert Image.open(project / f).mode == "RGB", f
