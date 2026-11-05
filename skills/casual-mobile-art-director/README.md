@@ -24,21 +24,20 @@ references/
   pipeline-godot.md          Godot 4.4–4.7 import, shaders, iOS export, MCP
   casual-mobile-canon.md     touchstone titles and current trends (dated; verify with web search)
   style-vocabulary.md        precise words for render style, colour, lighting, motion, UI material
-evals/                       test cases in the `claude plugin eval` layout
 ```
 
 The Pillow scripts this skill used to bundle (check, clamp, export, contact sheet) were replaced by artpipeline in Nov 2026.
 
 ## Evals
 
-The evals use the in-development game **Sorting Line** (`~/developer/sortingline`, treated as read-only) as the test subject:
+The plugin's evals use the in-development game **Sorting Line** (`~/developer/sortingline`, treated as read-only) as the test subject:
 
 - `icon-directions-greenfield`
 - `meta-screens-tightening`
 - `store-assets-handoff`
 - `achievement-badges-production`
 
-Run them from this folder with `claude plugin eval . --allow-tools Write,Edit,Bash` (these are real, billed model runs).
+They live at the plugin root, `evals/`, because they test the skill and the MCP server together. See the repository README for how to run them (these are real, billed model runs).
 
 ## History
 

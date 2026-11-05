@@ -2,3 +2,5 @@ schema_version: "1.1"
 name: store-assets-handoff
 expected_outcome: |
   Produces a handoff-mode markdown brief file with an exhaustive asset table (paths, filenames, formats, sizes), a tool named per asset routed sensibly across Canva / VectorCraft / image gen, prompt seeds with a shared style block, self-checkable acceptance criteria, current App Store specs (6.9-inch 1320x2868 screenshots, iPad only if supported, app preview 15–30s), a layered Icon Composer icon, art for the 46 Game Center achievements, a handoff sequence with sign-off gates, and an out-of-scope list.
+context:
+  scaffold_script: scaffold.sh

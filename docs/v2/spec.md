@@ -205,7 +205,7 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 | **M4 Placement** | Staging, xcassets, godot, phaser | Sorting Line badges placed into a scratch copy and verified in the simulator |
 | **M5 Eval and release** | Run the skill's evals with and without the tool; README; 2.0.0 tag | Pass rate ≥ skill alone; fewer manifest errors and gate violations; cost and time reported |
 
-Evals reuse `casual-mobile-art-director/evals/` (Sorting Line, read-only). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.
+Evals live at the plugin root, `evals/` (Sorting Line, read-only). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.
 
 ## 12. Imaging notes (M2)
 

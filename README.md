@@ -56,6 +56,9 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                                   # unit, imaging parity, MCP (in-process and stdio)
 claude --plugin-dir . # load the working copy as a plugin
 claude plugin validate .
+
+# evals (real, billed runs; the MCP server must actually start, hence --mocks off)
+claude plugin eval . --mocks off --allow-tools Write Edit Bash 'mcp__plugin_artpipeline_artpipeline__*'
 ```
 
 The design and milestones are in [`docs/v2/spec.md`](docs/v2/spec.md).
