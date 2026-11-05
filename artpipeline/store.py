@@ -14,7 +14,7 @@ from artpipeline.errors import PipelineError
 
 STATE_DIR = ".artpipeline"
 DB_NAME = "pipeline.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -58,7 +58,15 @@ CREATE TABLE IF NOT EXISTS style_locks (
     palette TEXT NOT NULL,
     hero_ids TEXT NOT NULL,
     refs TEXT NOT NULL,
-    notes TEXT
+    notes TEXT,
+    provisional INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS staged (
+    path TEXT PRIMARY KEY,          -- relative to the root
+    asset_id TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    staged_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS gates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +101,7 @@ class Store:
         self.root = root.resolve()
         self.state_dir = self.root / STATE_DIR
         self.db_path = self.state_dir / DB_NAME
+        self._migrated = False
 
     @classmethod
     def create(cls, root: Path) -> "Store":
@@ -160,6 +169,9 @@ class Store:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if not self._migrated:
+                _migrate(conn)
+                self._migrated = True
             yield conn
             conn.execute("COMMIT")
         except BaseException:
@@ -167,6 +179,19 @@ class Store:
             raise
         finally:
             conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring a pipeline made by an older dev build up to SCHEMA_VERSION (inside the open tx)."""
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if row and int(row[0]) >= SCHEMA_VERSION:
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(style_locks)")}
+    if "provisional" not in cols:
+        conn.execute("ALTER TABLE style_locks ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
+    conn.execute("""CREATE TABLE IF NOT EXISTS staged (path TEXT PRIMARY KEY, asset_id TEXT NOT NULL,
+                    n INTEGER NOT NULL, sha256 TEXT NOT NULL, staged_at TEXT NOT NULL)""")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
 
 def dumps(v: Any) -> str:

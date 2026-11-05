@@ -126,7 +126,9 @@ pending ──claim──▶ in_progress ──register──▶ checking ──
 | Rule | Default | Error when violated |
 |---|---|---|
 | Non-hero assets can't be claimed until a StyleLock exists. With no heroes in the brief, claims are allowed up to the gate threshold, then need a StyleLock | on | `STYLE_NOT_LOCKED`: lists the heroes and their states |
-| A StyleLock requires every hero to be approved, and the lock itself is set with `by: user` | — | `HEROES_NOT_APPROVED` |
+| A StyleLock requires every hero to be approved, and the lock itself is set with `by: user` | — | `HEROES_NOT_APPROVED`, `USER_SIGNOFF_REQUIRED` |
+| Exception: when the user is away and asked the agent to carry on, `by: agent` may set a **provisional** lock. Batch gates are deferred under it; work packets, manifest and hand-back mark it; the user's real lock sends every non-hero asset approved under it back to review. A provisional lock can't replace a user lock | — | `INVALID_STATE` |
+| Approval stages the processed master and renditions at the asset's destination under the root; a file there that the pipeline didn't write is moved to `superseded/<ts>/`, never overwritten | — | — |
 | Max attempts per asset; exceeding it moves the asset to `flagged` | 3 | `RETRY_BUDGET_SPENT` |
 | An attempt with n > 1 must state `change_from_previous` | — | `NO_CAUSE_CHANGE`: "change the cause, don't reroll" |
 | Approval requires a passing attempt and that attempt on a contact sheet | — | `NOT_REVIEWED` |
@@ -147,7 +149,7 @@ All tools return structured output (an output schema). Review tools also return 
 | `register_attempt(asset_id, file, provenance, change_from_previous?)` | Copy in, process, export renditions and run checks. Returns the check results plus an inline preview at display sizes. |
 | `review_sheet(asset_ids? \| pending_review? \| gate?)` | Build a contact sheet (true sizes, review backgrounds, greyscale row, labels with attempt numbers). Returns the image and its path, and marks those attempts as reviewed. |
 | `decide(asset_id, decision, reason?, by)` | Approve or reject the current attempt. Rejecting requires a reason. |
-| `lock_style(style_block, palette, hero_ids, by="user")` | Create a StyleLock version. Changing it later bumps the version and flags assets approved under the old lock for re-review. |
+| `lock_style(style_block, palette, hero_ids, by="user", provisional=false)` | Create a StyleLock version (`by="agent", provisional=true` only when the user is away). Changing it later bumps the version and flags assets approved under the old lock for re-review. |
 | `pass_gate(gate_id, by, notes?)` | Clear a batch or in-engine gate. |
 | `flag` / `unflag(asset_id, reason)` | Hand an asset to the human, or take it back. |
 | `place(asset_ids \| approved, target, confirm_overwrite=false)` | Write files into the engine layout (see §7). Returns the files written and anything superseded. |
@@ -194,6 +196,7 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 2. **Briefs without heroes are allowed with a warning.** `init` warns. Claims of non-hero assets stop at the gate threshold (15) until a `lock_style` exists.
 3. **`.artpipeline/` is git-ignored by default.** Commit `art-manifest.json`.
 4. **Python.**
+5. **Provisional lock (2026-11-05).** The first badges eval stopped at 4 heroes because the user was away; the eval itself expects work to continue under an unapproved lock. An agent may lock provisionally only when the user is away; nothing under it is final.
 
 ## 11. Milestones
 
@@ -236,7 +239,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 13. MCP and packaging notes (M3)
 
-- **SDK:** `mcp` 2.x renamed `FastMCP` to `MCPServer`. Tools build `CallToolResult` directly: structured content, a text copy, and image blocks. Refusals are `is_error` results carrying the error code and hint. `by` parameters are typed: `Literal["user"]` for lock, gate and unflag; `"user" | "agent"` for decide and flag.
+- **SDK:** `mcp` 2.x renamed `FastMCP` to `MCPServer`. Tools build `CallToolResult` directly: structured content, a text copy, and image blocks. Refusals are `is_error` results carrying the error code and hint. `by` parameters are typed: `Literal["user"]` for gate and unflag; `"user" | "agent"` for decide, flag and lock (where `agent` requires `provisional`).
 - **Images:**
   - The model sees one strip per asset, not the full page. Images with a long edge over 1,568 px are scaled down by the client, which would make tiles lie about size. Full pages are saved for the user.
   - `register_attempt` returns the asset's strip by default, and that counts as review.

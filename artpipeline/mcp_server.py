@@ -31,7 +31,9 @@ REF_THUMB = 384
 INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typical loop:
 1. init(brief) once. Heroes come first: claim → produce → register_attempt → look at the returned
    strip at display size → decide. Show the user the hero strips; only after they approve call
-   lock_style(by="user").
+   lock_style(by="user"). If the user is away and told you to carry on, you may instead call
+   lock_style(by="agent", provisional=true) once the heroes pass: work continues, gates are deferred,
+   and everything stays provisional until the user locks (say so in the hand-back).
 2. Then claim(n, agent) per worker (subagents use their own agent label). Each work packet carries the
    style lock, palette, references (shown inline), and every earlier attempt's failure or rejection
    reason. Produce with the right tool (code-drawn SVG, connected generator/app), then
@@ -39,6 +41,8 @@ INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typ
    register again with change_from_previous. Retries are capped; exhausted assets get flagged.
 3. When decide() returns gate_due, stop claiming: review_sheet(gate_id), show the user, and call
    pass_gate(by="user") only after they sign off.
+   Approved files are copied to their destination under the root automatically (anything already
+   there is moved to superseded/, never overwritten); art-manifest.json points at those copies.
 4. handback() at the end. by="user" means the user said so in this conversation; never set it on
    your own judgement."""
 
@@ -230,16 +234,24 @@ def decide(asset_id: str, decision: Literal["approve", "reject"], by: By,
 
 
 @server.tool(annotations=RW)
-def lock_style(by: UserOnly,
+def lock_style(by: Annotated[Literal["user", "agent"], Field(
+                   description="'user' only after the user approved the heroes in this conversation. "
+                   "'agent' is allowed only with provisional=true.")],
                style_block: Annotated[str | None, Field(description="Default: the brief's style block")] = None,
                palette: list[str] | None = None,
                hero_ids: list[str] | None = None,
                references: list[str] | None = None,
-               notes: str | None = None) -> CallToolResult:
+               notes: str | None = None,
+               provisional: Annotated[bool, Field(
+                   description="Only when the user is away and asked you to carry on: by='agent' locks "
+                   "provisionally so non-hero work can continue. Nothing approved under it is final; the "
+                   "user's real lock sends it back to review. Never use it to skip a user who is present.")]
+               = False) -> CallToolResult:
     """Lock the style after the user approves the heroes. Non-hero work opens; every later work
     packet carries this lock. Re-locking sends assets approved under the old lock back to review."""
     return _call(lambda: _result(_pipeline().lock_style(
-        by, style_block, palette=palette, hero_ids=hero_ids, references=references, notes=notes)))
+        by, style_block, palette=palette, hero_ids=hero_ids, references=references, notes=notes,
+        provisional=provisional)))
 
 
 @server.tool(annotations=RW)

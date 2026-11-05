@@ -4,6 +4,7 @@ Every public method is one transaction and returns a JSON-able dict. Refusals ra
 PipelineError with a stable code and a hint naming the next valid step."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -563,10 +564,14 @@ class Pipeline:
             _event(c, now, by, decision, asset_id, n=att["n"], reason=reason)
             if status == FLAGGED:
                 _event(c, now, "pipeline", "flag", asset_id, reason="retry budget spent on rejections")
+            staged = None
             if status == APPROVED:
+                staged = self._stage(c, r, _approved_attempt(c, asset_id), now)
                 gate_due = _maybe_open_gate(c, now, settings)
             self._write_manifest(c)
         out: dict[str, Any] = {"asset_id": asset_id, "attempt": att["n"], "status": status}
+        if staged:
+            out.update(staged)
         if status == PENDING:
             out["next"] = "Back in the queue; the next claim gets this reason in its work packet."
         if status == FLAGGED:
@@ -586,14 +591,27 @@ class Pipeline:
         hero_ids: list[str] | None = None,
         references: list[str] | None = None,
         notes: str | None = None,
+        provisional: bool = False,
     ) -> dict[str, Any]:
-        if by != USER:
+        if provisional and by == USER:
+            raise PipelineError(E.INVALID_ARGUMENT, "A lock by the user is never provisional.",
+                                hint="Call lock_style(by='user') without provisional.")
+        if by != USER and not provisional:
             raise PipelineError(
                 E.USER_SIGNOFF_REQUIRED, "Only the user can lock the style.",
-                hint="Show the user the hero contact sheet; call lock_style(by='user') after they say yes.",
+                hint="Show the user the hero contact sheet; call lock_style(by='user') after they say yes. "
+                "If the user is away and asked you to carry on, lock_style(by='agent', provisional=True) "
+                "lets work continue: everything approved under it goes back to review when the user locks.",
             )
+        _check_by(by)
         now = self._now()
         with self.store.tx() as c:
+            prev = _current_lock(c)
+            if provisional and prev is not None and not prev["provisional"]:
+                raise PipelineError(
+                    E.INVALID_STATE, f"The user already locked the style (v{prev['version']}).",
+                    hint="Only the user can change a user lock: lock_style(by='user').",
+                )
             style = _style(c)
             block = (style_block or style.block or "").strip()
             if not block:
@@ -620,17 +638,17 @@ class Pipeline:
                 att = _approved_attempt(c, h)
                 if att is not None:
                     refs.append(att["processed_path"] or att["source_path"])
-            prev = _current_lock(c)
             version = (prev["version"] + 1) if prev else 1
             c.execute(
-                "INSERT INTO style_locks(version, created_at, by, style_block, palette, hero_ids, refs, notes)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (version, now, by, block, dumps(pal), dumps(hero_ids), dumps(refs), notes),
+                "INSERT INTO style_locks(version, created_at, by, style_block, palette, hero_ids, refs, notes,"
+                " provisional) VALUES (?,?,?,?,?,?,?,?,?)",
+                (version, now, by, block, dumps(pal), dumps(hero_ids), dumps(refs), notes, int(provisional)),
             )
             lock_dir = self.store.state_dir / "style-lock"
             lock_dir.mkdir(exist_ok=True)
             (lock_dir / f"v{version}.json").write_text(json.dumps({
-                "version": version, "created_at": now, "by": by, "style_block": block,
+                "version": version, "created_at": now, "by": by, "provisional": provisional,
+                "style_block": block,
                 "palette": pal, "heroes": hero_ids, "references": refs, "notes": notes,
             }, indent=2), encoding="utf-8")
             (lock_dir / "palette.txt").write_text("\n".join(pal) + "\n", encoding="utf-8")
@@ -649,11 +667,18 @@ class Pipeline:
                         c.execute("UPDATE assets SET status=?, updated_at=? WHERE id=?",
                                   (AWAITING_REVIEW, now, aid))
                         rereview.append(aid)
-            _event(c, now, by, "lock_style", None, version=version, heroes=hero_ids, rereview=rereview)
+            _event(c, now, by, "lock_style", None, version=version, heroes=hero_ids, rereview=rereview,
+                   provisional=provisional)
             self._write_manifest(c)
-        out: dict[str, Any] = {"version": version, "heroes": hero_ids, "palette": pal, "references": refs}
+        out: dict[str, Any] = {"version": version, "provisional": provisional, "heroes": hero_ids,
+                               "palette": pal, "references": refs}
         if rereview:
             out["rereview"] = rereview
+        if provisional:
+            out["next"] = ("Provisional lock: non-hero work is open and batch gates are deferred. Nothing "
+                           "approved under it is final: when the user locks the style, every non-hero asset "
+                           "approved under this lock returns to review. Say so in the hand-back.")
+        elif rereview:
             out["next"] = "Assets approved under the previous lock are back in review."
         else:
             out["next"] = "Non-hero assets are now claimable; every work packet carries this lock."
@@ -759,6 +784,7 @@ class Pipeline:
                 "direction": meta.get("direction"),
                 "counts": _counts(rows),
                 "style_lock": lock["version"] if lock else None,
+                "style_lock_provisional": bool(lock and lock["provisional"]),
                 "open_gate": {"gate_id": gate["id"], "asset_ids": loads(gate["asset_ids"]),
                               "has_sheet": gate["sheet_id"] is not None} if gate else None,
                 "awaiting_review": [r["id"] for r in rows if r["status"] == AWAITING_REVIEW],
@@ -805,6 +831,7 @@ class Pipeline:
         out: dict[str, Any] = {
             "counts": _counts(rows),
             "style_lock": lock["version"] if lock else None,
+            "style_lock_provisional": bool(lock and lock["provisional"]),
             "manifest": str(manifest),
             "flagged": flagged,
             "unfinished": unfinished,
@@ -815,6 +842,14 @@ class Pipeline:
                 for a in candidates
             ],
         }
+        if lock is None:
+            out["waiting_for_user"] = ("The style is not locked: show the user the hero sheet and ask them "
+                                       "to approve it (lock_style(by='user')).")
+        elif lock["provisional"]:
+            out["waiting_for_user"] = (
+                f"The style lock (v{lock['version']}) is provisional, set by the agent while the user was away. "
+                f"{len(approved)} approved asset(s) are not final: show the user the hero sheet; when they lock "
+                "the style, the non-hero assets return to review.")
         if approved:
             sheet = self.review_sheet([a["asset_id"] for a in approved], actor="handback")
             out["final_sheet"] = sheet["pages"]
@@ -860,6 +895,7 @@ class Pipeline:
             "references": spec.get("references", []),
             "style": {
                 "lock_version": lock["version"] if lock else None,
+                "provisional": bool(lock and lock["provisional"]),
                 "block": lock["style_block"] if lock else style.block,
                 "palette": loads(lock["palette"]) if lock else style.palette,
                 "backgrounds": klass["review_backgrounds"] or style.backgrounds,
@@ -872,10 +908,52 @@ class Pipeline:
                     "provenance" + (", change_from_previous)" if used else ")"),
         }
 
+    def _stage(self, c, r, att, now: str) -> dict[str, Any] | None:
+        """Copy an approved attempt's master and renditions to the asset's destination under the root.
+        A file there that the pipeline did not put there is moved to superseded/ first, never overwritten."""
+        if att is None:
+            return None
+        spec = loads(r["spec"])
+        src = self.root / (att["processed_path"] or att["source_path"])
+        dest = self.root / spec["destination"]
+        if dest.suffix.lower() != src.suffix.lower():
+            dest = dest.with_suffix(src.suffix)
+        pairs = [(src, dest)]
+        for rel in (loads(att["renditions"]) or {}).values():
+            rsrc = self.root / rel
+            pairs.append((rsrc, dest.parent / rsrc.name))
+        written, superseded = [], []
+        stamp = now.replace(":", "").replace("-", "").split(".")[0]
+        for s_, d in pairs:
+            if not s_.is_file():
+                continue
+            rel_d = _rel(d, self.root)
+            d.parent.mkdir(parents=True, exist_ok=True)
+            if d.exists():
+                ours = c.execute("SELECT sha256 FROM staged WHERE path=?", (rel_d,)).fetchone()
+                if ours is None or ours["sha256"] != _sha256(d):
+                    keep = self.root / "superseded" / stamp / rel_d
+                    keep.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(d), keep)
+                    superseded.append({"was": rel_d, "moved_to": _rel(keep, self.root)})
+            shutil.copy2(s_, d)
+            c.execute("INSERT OR REPLACE INTO staged(path, asset_id, n, sha256, staged_at) VALUES (?,?,?,?,?)",
+                      (rel_d, r["id"], att["n"], _sha256(d), now))
+            written.append(rel_d)
+        _event(c, now, "pipeline", "stage", r["id"], n=att["n"], files=written, superseded=superseded)
+        out: dict[str, Any] = {"staged": written}
+        if superseded:
+            out["superseded"] = superseded
+        return out
+
     def _write_manifest(self, c) -> Path:
         meta = _meta(c)
         lock = _current_lock(c)
         rows = list(c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord"))
+        provisional = {x[0] for x in c.execute("SELECT version FROM style_locks WHERE provisional=1")}
+        staged: dict[tuple[str, int], list[str]] = {}
+        for x in c.execute("SELECT path, asset_id, n FROM staged ORDER BY path"):
+            staged.setdefault((x["asset_id"], x["n"]), []).append(x["path"])
         assets = []
         for r in rows:
             spec = loads(r["spec"])
@@ -884,13 +962,17 @@ class Pipeline:
             if att is not None:
                 prov = loads(att["provenance"])
                 checks = loads(att["checks"]) or {}
+                files = staged.get((r["id"], att["n"]), [])
+                main = next((f for f in files if Path(f).stem == Path(spec["destination"]).stem), None)
                 approved = {
                     "attempt": att["n"],
-                    "file": att["processed_path"] or att["source_path"],
-                    "renditions": loads(att["renditions"]),
+                    "file": main or att["processed_path"] or att["source_path"],
+                    "renditions": [f for f in files if f != main] or loads(att["renditions"]),
+                    "attempt_file": att["processed_path"] or att["source_path"],
                     **{k: prov.get(k) for k in ("route", "tool", "model", "prompt", "seed", "references", "rights")},
                     "checks": {"pass": checks.get("pass"), "warn": checks.get("warn", [])},
                     "style_lock": att["style_lock_version"],
+                    "provisional": att["style_lock_version"] in provisional,
                     "approved_by": att["decision_by"],
                     "approved_at": att["decided_at"],
                 }
@@ -909,7 +991,8 @@ class Pipeline:
             "project": meta.get("project"),
             "direction": meta.get("direction"),
             "brief": meta.get("brief"),
-            "style_lock": {"version": lock["version"], "by": lock["by"], "at": lock["created_at"]} if lock else None,
+            "style_lock": {"version": lock["version"], "by": lock["by"], "at": lock["created_at"],
+                           "provisional": bool(lock["provisional"])} if lock else None,
             "counts": _counts(rows),
             "assets": assets,
         }
@@ -933,6 +1016,10 @@ def _rel(p: Path, root: Path) -> str:
         return p.relative_to(root).as_posix()
     except ValueError:
         return str(p)
+
+
+def _sha256(p: Path) -> str:
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
 def _meta(c) -> dict[str, str]:
@@ -1013,6 +1100,9 @@ def _open_gate(c):
 def _maybe_open_gate(c, now: str, settings: Settings) -> dict[str, Any] | None:
     if _open_gate(c):
         return None
+    lock = _current_lock(c)
+    if lock is not None and lock["provisional"]:
+        return None  # deferred: the user's real lock sends all of this work back to review anyway
     marks = [r[0] for r in c.execute(
         "SELECT passed_at FROM gates WHERE kind='batch' AND passed_at IS NOT NULL "
         "UNION ALL SELECT created_at FROM style_locks") if r[0]]

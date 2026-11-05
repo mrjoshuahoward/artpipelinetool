@@ -103,6 +103,72 @@ def test_relock_sends_approved_assets_back_to_review(make_pipeline, good_png):
     assert code(e) == E.NOT_REVIEWED
 
 
+def test_provisional_lock_when_user_is_away(make_pipeline, good_png, project):
+    m = make_manifest(n_assets=6, heroes=2)
+    m["settings"]["gate_threshold"] = 3
+    p = make_pipeline(m)
+    approve(p, "badge_00", good_png)
+    approve(p, "badge_01", good_png)
+    with pytest.raises(PipelineError) as e:
+        p.lock_style("agent")
+    assert code(e) == E.USER_SIGNOFF_REQUIRED and "provisional" in e.value.hint
+    with pytest.raises(PipelineError) as e:
+        p.lock_style("user", provisional=True)
+    assert code(e) == E.INVALID_ARGUMENT
+
+    lock = p.lock_style("agent", provisional=True)
+    assert lock["version"] == 1 and lock["provisional"] is True
+    packet = p.claim("main")["claimed"][0]
+    assert packet["style"]["provisional"] is True
+    p.release(packet["asset_id"], "main")
+    # gates are deferred under a provisional lock: 3 approvals reach the threshold of 3, no gate
+    for aid in ("badge_02", "badge_03", "badge_04"):
+        approve(p, aid, good_png)
+    assert p.status()["open_gate"] is None and p.status()["style_lock_provisional"] is True
+
+    doc = json.loads((project / "art-manifest.json").read_text())
+    assert doc["style_lock"]["provisional"] is True
+    assert all(a["approved"]["provisional"] for a in doc["assets"] if a["approved"] and not a["hero"])
+    hb = p.handback()
+    assert hb["style_lock_provisional"] is True and "provisional" in hb["waiting_for_user"]
+
+    # the agent cannot override a user lock with a provisional one
+    real = p.lock_style("user")
+    assert real["version"] == 2 and real["provisional"] is False
+    assert real["rereview"] == ["badge_02", "badge_03", "badge_04"]  # heroes stay approved
+    with pytest.raises(PipelineError) as e:
+        p.lock_style("agent", provisional=True)
+    assert code(e) == E.INVALID_STATE
+    assert "waiting_for_user" not in p.handback()
+
+
+def test_approved_files_are_staged_without_clobbering(make_pipeline, good_png, project, clock):
+    m = make_manifest(n_assets=2, heroes=0)
+    m["classes"]["badge"]["renditions"] = [{"suffix": "-32", "size": [32, 32]}]
+    p = make_pipeline(m)
+    # a file the pipeline didn't write already sits at badge_00's destination
+    (project / "badges").mkdir()
+    (project / "badges" / "badge_00.png").write_bytes(b"hand-made art")
+    p.claim("main", asset_ids=["badge_00"])
+    p.register_attempt("badge_00", good_png, "main", PROV)
+    p.record_sheet(good_png, ["badge_00"])
+    out = p.decide("badge_00", "approve", "agent")
+    assert out["staged"] == ["badges/badge_00.png", "badges/badge_00-32.png"]
+    moved = out["superseded"][0]
+    assert moved["was"] == "badges/badge_00.png"
+    assert (project / moved["moved_to"]).read_bytes() == b"hand-made art"
+    assert (project / "badges" / "badge_00-32.png").is_file()
+    doc = json.loads((project / "art-manifest.json").read_text())
+    assert doc["assets"][0]["approved"]["renditions"] == ["badges/badge_00-32.png"]
+
+    # re-approval (after a re-lock sends it back to review) replaces the pipeline's own copy in place
+    p.lock_style("user")
+    assert p.lock_style("user", "Revised block")["rereview"] == ["badge_00"]
+    p.record_sheet(good_png, ["badge_00"])
+    again = p.decide("badge_00", "approve", "user")
+    assert again["staged"][0] == "badges/badge_00.png" and "superseded" not in again
+
+
 def test_no_heroes_caps_claims_at_threshold(make_pipeline):
     m = make_manifest(n_assets=5, heroes=0)
     m["settings"]["gate_threshold"] = 2
@@ -287,8 +353,28 @@ def test_manifest_records_provenance(make_pipeline, good_png, project):
     doc = json.loads((project / "art-manifest.json").read_text())
     a = doc["assets"][0]
     assert a["status"] == "approved" and a["attempts"] == 1
-    assert a["approved"]["file"] == ".artpipeline/attempts/badge_00/1/badge_00.png"
+    assert a["approved"]["file"] == "badges/badge_00.png"  # staged at its destination
+    assert a["approved"]["attempt_file"] == ".artpipeline/attempts/badge_00/1/badge_00.png"
+    assert (project / "badges" / "badge_00.png").is_file()
     assert a["approved"]["seed"] == 7 and a["approved"]["approved_by"] == "user"
     assert a["approved"]["rights"] == "original (code-authored)"
     kinds = [e["kind"] for e in p.history("badge_00")["events"]]
-    assert kinds == ["claim", "attempt", "approve"]
+    assert kinds == ["claim", "attempt", "approve", "stage"]
+
+
+def test_older_pipeline_is_migrated(make_pipeline, good_png, project):
+    import sqlite3
+    make_pipeline()
+    db = project / ".artpipeline" / "pipeline.db"
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE style_locks DROP COLUMN provisional")
+    conn.execute("DROP TABLE staged")
+    conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+    conn.commit()
+    conn.close()
+    from artpipeline.store import Store
+    p = Pipeline(Store.open(project))
+    approve(p, "badge_00", good_png, by="user")
+    approve(p, "badge_01", good_png, by="user")
+    assert p.lock_style("user")["provisional"] is False
+    assert (project / "badges" / "badge_00.png").is_file()

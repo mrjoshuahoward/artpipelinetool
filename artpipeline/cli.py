@@ -63,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--hero", action="append", dest="hero_ids")
     s.add_argument("--ref", action="append", dest="references")
     s.add_argument("--notes")
+    s.add_argument("--provisional", action="store_true",
+                   help="With --by agent: provisional lock while the user is away")
 
     s = sub.add_parser("pass-gate", help="Record the user's sign-off on a review gate")
     s.add_argument("gate_id", type=int)
@@ -247,7 +249,7 @@ def run(argv: list[str] | None = None) -> tuple[int, Any]:
         elif a.cmd == "lock-style":
             pal = [h.strip() for h in a.palette.split(",")] if a.palette else None
             out = p.lock_style(a.by, a.block, palette=pal, hero_ids=a.hero_ids,
-                               references=a.references, notes=a.notes)
+                               references=a.references, notes=a.notes, provisional=a.provisional)
         elif a.cmd == "pass-gate":
             out = p.pass_gate(a.gate_id, a.by, a.notes)
         elif a.cmd == "flag":

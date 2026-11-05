@@ -25,7 +25,10 @@ Then call `init(brief_path, root)`. It is safe to re-run after editing the brief
 3. **Sign-off gate:** show the user the hero strips (or `review_sheet` of the heroes; the full page paths are in `pages`) and the decisions they embody: palette, keyline, light direction, rendering. Approve each hero with `decide(..., by="user")` only for what the user actually approved.
 4. `lock_style(by="user", style_block=..., palette=...)` only after the user says yes. The approved heroes become the references in every later work packet, and are shown inline when a worker claims.
 
-If the user is away or says "just make them", still make the heroes and check them yourself, then stop at the lock. `lock_style` needs the user. Say what is waiting for them.
+**If the user is away and asked you to carry on** ("I'm away, do as many as you can"), make and check the heroes yourself, approve them with `by="agent"`, then `lock_style(by="agent", provisional=True)`. That opens non-hero work under a **provisional** lock:
+- Batch gates are deferred: the user's real lock is the review. When they lock, every non-hero asset approved under the provisional lock goes back to review.
+- Work packets, the manifest and `handback` all mark the work provisional. Open the hand-back with it: "the style is provisionally locked by me; nothing is final until you approve the hero sheet."
+- Never lock provisionally when the user is present or reachable. Ask them instead. If they only said "just make them" without saying they're away, make the heroes and stop at the lock.
 
 Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review.
 
@@ -68,7 +71,8 @@ Set `needs_human_finish: true` in the manifest for any asset where human authors
 
 The asset isn't done until it looks right **in the game**:
 
-- **Place files** where the engine expects them: asset catalog image sets with `Contents.json`, Godot import presets, a Phaser atlas plus its preload-manifest entry, or the Icon Composer layer files for the app icon. The processed master and renditions for each approved asset are listed in `art-manifest.json` (`approved.file`, `approved.renditions`). Until artpipeline's placement tools land, copy from there.
+- **Staging is automatic.** On approval, artpipeline copies the processed master and its renditions to the asset's `destination` under the pipeline root (renditions sit beside it, e.g. `badge-512.png`). A file already there that the pipeline didn't write is moved to `superseded/<timestamp>/` first, never overwritten. `art-manifest.json` points at these copies (`approved.file`, `approved.renditions`). Don't copy files out of `.artpipeline/` by hand.
+- **Place files** where the engine expects them: asset catalog image sets with `Contents.json`, Godot import presets, a Phaser atlas plus its preload-manifest entry, or the Icon Composer layer files for the app icon. Until artpipeline's engine placement tools land, copy from the staged files.
 - **Pack atlases** (TexturePacker CLI, or the engine's own packer) when the set is final.
 - **Screenshot in context:**
   - Phaser: the dev server plus Playwright on the real canvas.
@@ -80,7 +84,7 @@ The asset isn't done until it looks right **in the game**:
 
 ## 6. Manifest
 
-artpipeline writes `art-manifest.json` at the pipeline root after every decision. Each entry records the asset's status, the approved file and renditions, route, tool, model, prompt, seed, references, rights, check results, style-lock version and who approved it. Don't hand-write a manifest. If you need extra fields, put them in `rights` or `notes` on the attempt. `history(asset_id)` shows the full event log.
+artpipeline writes `art-manifest.json` at the pipeline root after every decision. Each entry records the asset's status, the approved (staged) file and renditions, route, tool, model, prompt, seed, references, rights, check results, style-lock version and who approved it. Don't hand-write a manifest. If you need extra fields, put them in `rights` or `notes` on the attempt. `history(asset_id)` shows the full event log.
 
 ## 7. Review gates and hand-back
 

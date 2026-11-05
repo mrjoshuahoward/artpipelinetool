@@ -145,3 +145,21 @@ def test_stdio_server_starts(tmp_path):
         async with Client(params) as c:
             return [t.name for t in (await c.list_tools()).tools]
     assert "claim" in asyncio.run(go())
+
+
+def test_provisional_lock_over_mcp(tmp_path):
+    brief = write_brief(tmp_path / "brief.md", make_manifest(n_assets=2, heroes=1))
+    png = make_png(tmp_path / "gen" / "a.png")
+    *_, lock, claim, hb = call(
+        ("init", {"brief_path": str(brief)}),
+        ("claim", {"agent": "main"}),
+        ("register_attempt", {"asset_id": "badge_00", "file": str(png), "agent": "main", **PROV}),
+        ("decide", {"asset_id": "badge_00", "decision": "approve", "by": "agent"}),
+        ("lock_style", {"by": "agent", "provisional": True}),
+        ("claim", {"agent": "main"}),
+        ("handback", {}),
+    )
+    assert lock.structured_content["provisional"] is True
+    assert claim.structured_content["claimed"][0]["style"]["provisional"] is True
+    assert "provisional" in hb.structured_content["waiting_for_user"]
+    assert (tmp_path / "badges" / "badge_00.png").is_file()  # staged on approval
