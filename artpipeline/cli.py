@@ -92,6 +92,16 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--pending", action="store_true", help="All assets awaiting review")
     s.add_argument("--gate", type=int, dest="gate_id")
 
+    s = sub.add_parser("place", help="Write approved assets into a project layout")
+    s.add_argument("asset_ids", nargs="*")
+    s.add_argument("--target", choices=["staging", "xcassets", "godot", "phaser"], default="staging")
+    s.add_argument("--project", dest="project_dir")
+    s.add_argument("--confirm-overwrite", action="store_true",
+                   help="Replace files the pipeline didn't write instead of moving them to superseded/")
+    s.add_argument("--catalog", help="xcassets: catalog path when the project has several")
+    s.add_argument("--web-root", help="phaser: folder served at '/' (default public/ if present)")
+    s.add_argument("--pack", help="phaser: pack file path (default <web-root>/artpipeline-pack.json)")
+
     sub.add_parser("export-manifest", help="Rewrite art-manifest.json")
     sub.add_parser("handback", help="End-of-run summary with a final contact sheet")
     sub.add_parser("mcp", help="Run the MCP server on stdio")
@@ -262,6 +272,9 @@ def run(argv: list[str] | None = None) -> tuple[int, Any]:
             out = p.review_sheet(a.asset_ids, pending_review=a.pending, gate_id=a.gate_id)
         elif a.cmd == "handback":
             out = p.handback()
+        elif a.cmd == "place":
+            out = p.place(a.target, a.asset_ids or None, a.project_dir, a.confirm_overwrite,
+                          a.catalog, a.web_root, a.pack)
         elif a.cmd == "export-manifest":
             out = p.export_manifest()
         else:  # pragma: no cover

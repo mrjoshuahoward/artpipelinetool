@@ -45,7 +45,9 @@ INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typ
    there is moved to superseded/, never overwritten); art-manifest.json points at those copies.
 For sets larger than a handful, use register_attempts and decide_batch (one call per batch, one
 grid view of everything that passed) and check_image(asset_id=...) to pre-check drafts for free.
-4. handback() at the end. by="user" means the user said so in this conversation; never set it on
+4. place(target=...) writes approved art into the game project (xcassets, godot, phaser) only when
+   the user asks for it; a read-only or unknown project gets target="staging" (ART-INSTALL.md).
+5. handback() at the end. by="user" means the user said so in this conversation; never set it on
    your own judgement."""
 
 server = MCPServer(name="artpipeline", version=__version__, instructions=INSTRUCTIONS)
@@ -383,6 +385,33 @@ def handback() -> CallToolResult:
         return _result(out, pages, ["The first page of the final sheet is shown as an overview (it may be "
                                     "downscaled); give the user the 'final_sheet' paths."] if pages else None)
     return _call(go)
+
+
+@server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True,
+                                        open_world_hint=False))
+def place(target: Annotated[Literal["staging", "xcassets", "godot", "phaser"], Field(
+              description="staging: files stay under the pipeline root, plus ART-INSTALL.md with copy steps "
+              "(use for read-only repos). xcassets: imagesets/AppIcon in the Xcode asset catalog. godot: "
+              "files at res://<destination> plus .import presets. phaser: files plus a Loader pack JSON.")],
+          asset_ids: Annotated[list[str] | None, Field(description="Default: every approved asset")] = None,
+          project_dir: Annotated[str | None, Field(
+              description="The game project folder (default: the pipeline root). Only write into a "
+              "project the user asked you to place into.")] = None,
+          confirm_overwrite: Annotated[bool, Field(
+              description="Replace files the pipeline didn't write instead of moving them to superseded/. "
+              "Only when the user said so.")] = False,
+          catalog: Annotated[str | None, Field(description="xcassets: catalog path under project_dir, when "
+                                               "there is more than one")] = None,
+          web_root: Annotated[str | None, Field(description="phaser: folder served at '/' (default public/ "
+                                                "if present, else the project)")] = None,
+          pack: Annotated[str | None, Field(description="phaser: pack file path under project_dir (default "
+                                            "<web_root>/artpipeline-pack.json)")] = None,
+          ) -> CallToolResult:
+    """Write approved assets into an engine project layout and record every file in the manifest.
+    Anything already there that the pipeline didn't write is moved to <root>/superseded/, never lost.
+    Refused for engine targets while the style lock is provisional."""
+    return _call(lambda: _result(_pipeline().place(target, asset_ids, project_dir, confirm_overwrite,
+                                                   catalog, web_root, pack)))
 
 
 @server.tool(annotations=RO)

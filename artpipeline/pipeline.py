@@ -19,6 +19,7 @@ from artpipeline.checks import CheckContext, Checker, imaging_checker
 from artpipeline.imaging.render import RenderError, load_rgba
 from artpipeline.imaging.sheet import SheetItem, build_sheets, render_grid_pages, render_page
 from artpipeline.errors import PipelineError
+from artpipeline import place as place_mod
 from artpipeline.intake import load_brief
 from artpipeline.schema import AssetClass, Provenance, Settings, Style
 from artpipeline.store import Store, dumps, loads
@@ -929,6 +930,112 @@ class Pipeline:
             out["final_sheet"] = sheet["pages"]
         return out
 
+    def place(
+        self,
+        target: str = "staging",
+        asset_ids: list[str] | None = None,
+        project_dir: str | Path | None = None,
+        confirm_overwrite: bool = False,
+        catalog: str | None = None,
+        web_root: str | None = None,
+        pack: str | None = None,
+    ) -> dict[str, Any]:
+        """Write approved assets into a project layout (spec §7). Anything already there that the
+        pipeline didn't write moves to superseded/ unless confirm_overwrite is set."""
+        if target not in place_mod.TARGETS:
+            raise PipelineError(E.INVALID_ARGUMENT, f"Unknown target '{target}'.",
+                                hint=f"Use one of {list(place_mod.TARGETS)}.")
+        project = Path(project_dir).expanduser().resolve() if project_dir else self.root
+        if not project.is_dir():
+            raise PipelineError(E.INVALID_ARGUMENT, f"No folder at {project}.")
+        now = self._now()
+        stamp = _stamp(now)
+        with self.store.tx() as c:
+            lock = _current_lock(c)
+            if target != "staging" and lock is not None and lock["provisional"]:
+                raise PipelineError(
+                    E.USER_SIGNOFF_REQUIRED,
+                    "The style lock is provisional, so nothing approved under it is final yet.",
+                    hint="Use target='staging' for now; place into the project after the user locks the style.",
+                )
+            rows = {r["id"]: r for r in c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord")}
+            wanted = list(asset_ids) if asset_ids else [a for a, r in rows.items() if r["status"] == APPROVED]
+            items, atts, skipped = [], {}, []
+            for aid in wanted:
+                r = rows.get(aid)
+                if r is None:
+                    skipped.append({"asset_id": aid, "reason": "not in the brief"})
+                elif r["status"] != APPROVED:
+                    skipped.append({"asset_id": aid, "reason": f"{r['status']}, not approved"})
+                else:
+                    att = _approved_attempt(c, aid)
+                    atts[aid] = att
+                    items.append(self._item(r, att))
+            if not items:
+                raise PipelineError(E.INVALID_STATE, "Nothing approved to place.",
+                                    hint="Approve assets first (decide / decide_batch).", skipped=skipped)
+            try:
+                plan = place_mod.build(target, items, self.root, project, catalog=catalog, web_root=web_root,
+                                       pack=pack, stamp=now)
+            except place_mod.PlacementError as e:
+                raise PipelineError(E.INVALID_ARGUMENT, str(e), hint=e.hint) from e
+
+            superseded: list[dict[str, str]] = []
+            planned = {w.dest.resolve() for w in plan.writes}
+            for folder in plan.owned_dirs:  # an imageset is ours entirely: clear files we won't rewrite
+                if not folder.is_dir():
+                    continue
+                for f in sorted(folder.iterdir()):
+                    if not f.is_file() or f.resolve() in planned:
+                        continue
+                    ours = c.execute("SELECT sha256 FROM staged WHERE path=?", (self._key(f),)).fetchone()
+                    if ours is not None and ours["sha256"] == _sha256(f):
+                        f.unlink()
+                        c.execute("DELETE FROM staged WHERE path=?", (self._key(f),))
+                    else:
+                        superseded.append(self._supersede(c, f, stamp, project))
+            files: dict[str, list[str]] = {}
+            other: list[str] = []
+            kept: list[str] = []
+            for w in plan.writes:
+                n = atts[w.asset_id]["n"] if w.asset_id in atts else 0
+                key, moved = self._put(c, w.dest, src=w.src, data=w.data, asset_id=w.asset_id, n=n, now=now,
+                                       stamp=stamp, overwrite=confirm_overwrite, keep_if_exists=w.keep_if_exists,
+                                       base=project)
+                if moved:
+                    superseded.append(moved)
+                if key is None:
+                    kept.append(self._key(w.dest))
+                elif w.asset_id in atts:
+                    files.setdefault(w.asset_id, []).append(key)
+                else:
+                    other.append(key)
+            for aid, fs in files.items():
+                c.execute("INSERT OR REPLACE INTO placements(asset_id, target, n, files, placed_at) "
+                          "VALUES (?,?,?,?,?)", (aid, target, atts[aid]["n"], dumps(fs), now))
+            skipped += plan.skipped
+            _event(c, now, "pipeline", "place", None, target=target, project=str(project),
+                   assets=sorted(files), files=other, superseded=superseded, skipped=skipped)
+            self._write_manifest(c)
+        def show(k: str) -> str:  # paths in the reply are relative to the project
+            try:
+                return (self.root / k).resolve().relative_to(project).as_posix()
+            except ValueError:
+                return k
+        out: dict[str, Any] = {"target": target, "project": str(project), "placed": len(files),
+                               "files": {a: [show(k) for k in fs] for a, fs in files.items()}, **plan.info}
+        if other:
+            out["also_written"] = [show(k) for k in other]
+        if kept:
+            out["left_alone"] = [show(k) for k in kept]
+        if superseded:
+            out["superseded"] = superseded
+        if skipped:
+            out["skipped"] = skipped
+        if plan.notes:
+            out["notes"] = plan.notes
+        return out
+
     def export_manifest(self) -> dict[str, Any]:
         with self.store.tx() as c:
             path = self._write_manifest(c)
@@ -982,43 +1089,77 @@ class Pipeline:
                     "provenance" + (", change_from_previous)" if used else ")"),
         }
 
+    def _item(self, r, att) -> place_mod.Item:
+        spec = loads(r["spec"])
+        return place_mod.Item(
+            asset_id=r["id"], class_name=spec["class"], klass=AssetClass.model_validate(loads(r["cls"])),
+            destination=spec["destination"], master=self.root / (att["processed_path"] or att["source_path"]),
+            renditions={k: self.root / v for k, v in (loads(att["renditions"]) or {}).items()},
+        )
+
     def _stage(self, c, r, att, now: str) -> dict[str, Any] | None:
         """Copy an approved attempt's master and renditions to the asset's destination under the root.
         A file there that the pipeline did not put there is moved to superseded/ first, never overwritten."""
         if att is None:
             return None
-        spec = loads(r["spec"])
-        src = self.root / (att["processed_path"] or att["source_path"])
-        dest = self.root / spec["destination"]
-        if dest.suffix.lower() != src.suffix.lower():
-            dest = dest.with_suffix(src.suffix)
-        pairs = [(src, dest)]
-        for rel in (loads(att["renditions"]) or {}).values():
-            rsrc = self.root / rel
-            pairs.append((rsrc, dest.parent / rsrc.name))
         written, superseded = [], []
-        stamp = now.replace(":", "").replace("-", "").split(".")[0]
-        for s_, d in pairs:
-            if not s_.is_file():
+        stamp = _stamp(now)
+        for src, dest in place_mod.file_pairs(self._item(r, att), self.root):
+            if not src.is_file():
                 continue
-            rel_d = _rel(d, self.root)
-            d.parent.mkdir(parents=True, exist_ok=True)
-            if d.exists():
-                ours = c.execute("SELECT sha256 FROM staged WHERE path=?", (rel_d,)).fetchone()
-                if ours is None or ours["sha256"] != _sha256(d):
-                    keep = self.root / "superseded" / stamp / rel_d
-                    keep.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(d), keep)
-                    superseded.append({"was": rel_d, "moved_to": _rel(keep, self.root)})
-            shutil.copy2(s_, d)
-            c.execute("INSERT OR REPLACE INTO staged(path, asset_id, n, sha256, staged_at) VALUES (?,?,?,?,?)",
-                      (rel_d, r["id"], att["n"], _sha256(d), now))
-            written.append(rel_d)
+            key, moved = self._put(c, dest, src=src, asset_id=r["id"], n=att["n"], now=now, stamp=stamp)
+            written.append(key)
+            if moved:
+                superseded.append(moved)
         _event(c, now, "pipeline", "stage", r["id"], n=att["n"], files=written, superseded=superseded)
         out: dict[str, Any] = {"staged": written}
         if superseded:
             out["superseded"] = superseded
         return out
+
+    def _key(self, p: Path) -> str:
+        return _rel(p, self.root)
+
+    def _supersede(self, c, dest: Path, stamp: str, base: Path | None = None) -> dict[str, str]:
+        """Move a file aside to <root>/superseded/<stamp>/, keeping its path relative to the root
+        (or, outside the root, to the project folder it was placed into)."""
+        key = self._key(dest)
+        if key.startswith("/"):
+            b = base or dest.parent
+            keep = self.root / "superseded" / stamp / b.name / dest.resolve().relative_to(b.resolve())
+        else:
+            keep = self.root / "superseded" / stamp / key
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dest), keep)
+        c.execute("DELETE FROM staged WHERE path=?", (key,))
+        return {"was": key, "moved_to": _rel(keep, self.root)}
+
+    def _put(self, c, dest: Path, *, src: Path | None = None, data: bytes | None = None, asset_id: str,
+             n: int, now: str, stamp: str, overwrite: bool = False,
+             keep_if_exists: bool = False, base: Path | None = None) -> tuple[str | None, dict[str, str] | None]:
+        """Write one file. Replaces it silently only if the pipeline wrote what is there now (or
+        overwrite is set); otherwise the existing file goes to superseded/<stamp>/ first."""
+        key = self._key(dest)
+        if keep_if_exists and dest.exists():
+            return None, None
+        new = data if data is not None else Path(src).read_bytes()  # type: ignore[arg-type]
+        sha = hashlib.sha256(new).hexdigest()
+        moved = None
+        if dest.exists():
+            cur = _sha256(dest)
+            if cur != sha and not overwrite:
+                ours = c.execute("SELECT sha256 FROM staged WHERE path=?", (key,)).fetchone()
+                if ours is None or ours["sha256"] != cur:
+                    moved = self._supersede(c, dest, stamp, base)
+        if not dest.exists() or _sha256(dest) != sha:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src is not None:
+                shutil.copy2(src, dest)
+            else:
+                dest.write_bytes(new)
+        c.execute("INSERT OR REPLACE INTO staged(path, asset_id, n, sha256, staged_at) VALUES (?,?,?,?,?)",
+                  (key, asset_id, n, sha, now))
+        return key, moved
 
     def _write_manifest(self, c) -> Path:
         meta = _meta(c)
@@ -1028,6 +1169,9 @@ class Pipeline:
         staged: dict[tuple[str, int], list[str]] = {}
         for x in c.execute("SELECT path, asset_id, n FROM staged ORDER BY path"):
             staged.setdefault((x["asset_id"], x["n"]), []).append(x["path"])
+        placed: dict[tuple[str, int], dict[str, list[str]]] = {}
+        for x in c.execute("SELECT * FROM placements WHERE target != 'staging' ORDER BY target"):
+            placed.setdefault((x["asset_id"], x["n"]), {})[x["target"]] = loads(x["files"])
         assets = []
         for r in rows:
             spec = loads(r["spec"])
@@ -1050,6 +1194,8 @@ class Pipeline:
                     "approved_by": att["decision_by"],
                     "approved_at": att["decided_at"],
                 }
+                if (r["id"], att["n"]) in placed:
+                    approved["placed"] = placed[(r["id"], att["n"])]
             assets.append({
                 "id": r["id"],
                 "class": spec["class"],
@@ -1090,6 +1236,10 @@ def _rel(p: Path, root: Path) -> str:
         return p.relative_to(root).as_posix()
     except ValueError:
         return str(p)
+
+
+def _stamp(now: str) -> str:
+    return now.replace(":", "").replace("-", "").split(".")[0]
 
 
 def _sha256(p: Path) -> str:

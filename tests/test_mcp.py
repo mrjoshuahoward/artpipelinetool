@@ -199,3 +199,24 @@ def test_batch_register_decide_and_grid(tmp_path):
     assert d["counts"] == {"approved": 1, "error": 2, "pending": 1}
     errs = {x["asset_id"]: x["error"] for x in d["results"] if "error" in x}
     assert errs == {"badge_01": "REASON_REQUIRED", "badge_07": "INVALID_STATE"}
+
+
+def test_place_over_mcp(tmp_path):
+    brief = write_brief(tmp_path / "brief.md", make_manifest(n_assets=1, heroes=1))
+    png = make_png(tmp_path / "gen" / "a.png")
+    godot = tmp_path / "game"
+    godot.mkdir()
+    (godot / "project.godot").write_text("")
+    *_, placed = call(
+        ("init", {"brief_path": str(brief)}),
+        ("claim", {"agent": "main"}),
+        ("register_attempt", {"asset_id": "badge_00", "file": str(png), "agent": "main", **PROV}),
+        ("decide", {"asset_id": "badge_00", "decision": "approve", "by": "user"}),
+        ("lock_style", {"by": "user"}),
+        ("place", {"target": "godot", "project_dir": str(godot)}),
+    )
+    out = placed.structured_content
+    assert out["placed"] == 1 and out["res_paths"]["badge_00"] == "res://badges/badge_00.png"
+    assert (godot / "badges" / "badge_00.png.import").is_file()
+    m = json.loads((tmp_path / "art-manifest.json").read_text())
+    assert "godot" in m["assets"][0]["approved"]["placed"]

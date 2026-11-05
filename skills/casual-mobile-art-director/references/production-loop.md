@@ -74,14 +74,19 @@ Set `needs_human_finish: true` in the manifest for any asset where human authors
 The asset isn't done until it looks right **in the game**:
 
 - **Staging is automatic.** On approval, artpipeline copies the processed master and its renditions to the asset's `destination` under the pipeline root (renditions sit beside it, e.g. `badge-512.png`). A file already there that the pipeline didn't write is moved to `superseded/<timestamp>/` first, never overwritten. `art-manifest.json` points at these copies (`approved.file`, `approved.renditions`). Don't copy files out of `.artpipeline/` by hand.
-- **Place files** where the engine expects them: asset catalog image sets with `Contents.json`, Godot import presets, a Phaser atlas plus its preload-manifest entry, or the Icon Composer layer files for the app icon. Until artpipeline's engine placement tools land, copy from the staged files.
+- **Place files with `place(target=...)`**, only into a project the user asked you to write to:
+  - `xcassets`: one `<name>.imageset` per asset (`@1x/@2x/@3x` renditions become scales; otherwise single-scale) and an `AppIcon.appiconset` for a 1024 flat icon. Game Center art, store screenshots and Icon Composer layers are skipped with the reason: they don't belong in the catalog.
+  - `godot`: files at `res://<destination>` plus a lossless, no-mipmap `.import` preset (an existing `.import` is never replaced). Pixel-art filtering is a project or node setting in Godot 4; the result says so.
+  - `phaser`: files at `<destination>` plus `artpipeline-pack.json` in the web root (`public/` for Vite); load it with `this.load.pack("artpipeline", "artpipeline-pack.json")`. Keys are asset ids. Destinations outside the web root are written but left out of the pack, with a note.
+  - `staging`: nothing leaves the pipeline root; writes `ART-INSTALL.md` with an `rsync -R` copy command. Use it for read-only repos.
+  - Anything already there that the pipeline didn't write moves to `superseded/` (unless `confirm_overwrite`, which needs the user's say-so). Engine targets are refused under a provisional lock. Every placed file is recorded under `approved.placed` in the manifest.
 - **Pack atlases** (TexturePacker CLI, or the engine's own packer) when the set is final.
 - **Screenshot in context:**
   - Phaser: the dev server plus Playwright on the real canvas.
   - Godot: the Godot MCP or a headless run.
   - Native: the iOS simulator.
 - **Compare against the strips.** Watch for resolution softness (the DPR cap), wrong import filters, premultiplied-alpha fringes and colour-space shifts.
-- **Read-only repo:** keep the pipeline root in a separate output folder, write `INSTALL.md` with exact copy steps and any config changes, and verify against a scratch copy or a branch the user owns. Never touch their working tree.
+- **Read-only repo:** keep the pipeline root in a separate output folder, use `place(target="staging", project_dir=<their repo>)` for `ART-INSTALL.md`, add any config changes to it, and verify against a scratch copy or a branch the user owns. Never touch their working tree.
 - **Don't overwrite existing art without confirmation.** Move superseded files to `superseded/` until the user approves.
 
 ## 6. Manifest

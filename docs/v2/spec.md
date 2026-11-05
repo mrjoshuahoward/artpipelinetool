@@ -165,12 +165,14 @@ The **CLI** mirrors the tools one to one (`artpipeline claim --n 4 --agent sub-2
 
 | Target | Writes |
 |---|---|
-| `staging` (default; required for read-only repos) | `<output>/<destination>`, plus an `INSTALL.md` with exact copy steps |
-| `xcassets` | `*.imageset/` and `*.appiconset/` with `Contents.json` (scales, idioms); Game Center art |
-| `godot` | Files under `res://` paths, plus `.import` presets per class (filter off for pixel art) |
-| `phaser` | Individual files plus a preload-manifest JSON entry; atlas packing through the TexturePacker CLI when present (M4) |
+| `staging` (default; required for read-only repos) | `<root>/<destination>` (written on approval), plus `ART-INSTALL.md` with an `rsync -R` copy command |
+| `xcassets` | `<name>.imageset/` (scales from `@Nx` renditions, else single-scale) and `AppIcon.appiconset/` (single 1024 universal) with `Contents.json`. Game Center art, store screenshots and Icon Composer layers are skipped with a reason: they are uploaded to App Store Connect or built in Icon Composer |
+| `godot` | Files at `res://<destination>`, plus a lossless, no-mipmap `.import` preset where none exists. Godot 4 sets pixel-art filtering per project or node, not on import; the result says so |
+| `phaser` | Individual files plus a Loader pack file (`<web_root>/artpipeline-pack.json`, section `artpipeline`, keys are asset ids). Atlas packing through the TexturePacker CLI is not done yet |
 
-Before any write, existing files are moved to `superseded/` with a timestamp, unless `confirm_overwrite` is set. Every placed file is recorded in the manifest.
+Before any write, existing files are moved to `superseded/` with a timestamp, unless `confirm_overwrite` is set. Every placed file is recorded in the manifest. A file the pipeline wrote itself (tracked by hash) is replaced in place, so placing again is idempotent; an imageset folder is the pipeline's entirely, so stray files in it are moved aside too. Engine targets are refused while the style lock is provisional.
+
+Verified (2026-11-05): an app icon and two `ui_icon_svg` assets placed into a scratch copy of Sorting Line's `Assets.xcassets` compile with `actool` with no warnings, and a minimal SwiftUI app on the iOS 27 simulator shows the icon on the home screen and loads both imagesets at @3x.
 
 ## 8. Packaging and install
 
@@ -207,7 +209,7 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 | **M1 Core** ✅ 2026-11-04 | Schema, store, state machine, leases, gates, intake, CLI | Unit tests cover every transition and error code; concurrent-claim test with 8 workers |
 | **M2 Imaging** ✅ 2026-11-04 | Port and test the skill's checks, processing, exports and contact sheets; `resvg-py` rendering | Same verdicts as the skill's scripts on the eval assets. **Result:** check metrics (mean, palette share and worst ΔE, contrast) and pass/fail match the skill on the test fixtures, and Lanczos exports match pixel for pixel. Clamping differs on fewer than 2% of pixels (exact-colour cache instead of the skill's order-dependent bucketed cache). The skill's evals left no saved assets to compare, so parity was tested on fixtures. Deliberate departures: see §12 |
 | **M3 MCP + plugin** ✅ 2026-11-04 (eval run pending) | MCP server (`mcp` 2.x `MCPServer`), structured outputs, inline images, plugin packaging; update the skill's `production-loop.md` to use the tool | Badges eval runs end to end in Claude Code through the plugin. **Done:** tools, in-process and stdio tests, `claude plugin validate`, and a headless Claude Code session using the plugin's tool. **Pending:** the badges eval itself (billed; run with the user's go-ahead) |
-| **M4 Placement** | Staging, xcassets, godot, phaser | Sorting Line badges placed into a scratch copy and verified in the simulator |
+| **M4 Placement** | Staging, xcassets, godot, phaser | Done 2026-11-05: Sorting Line art placed into a scratch copy and verified in the simulator (badges are Game Center art, so they stay staged for App Store Connect) |
 | **M5 Eval and release** | Run the skill's evals with and without the tool; README; 2.0.0 tag | Pass rate ≥ skill alone; fewer manifest errors and gate violations; cost and time reported |
 
 Evals live at the plugin root, `evals/` (Sorting Line, read-only). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.

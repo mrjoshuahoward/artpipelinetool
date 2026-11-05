@@ -41,11 +41,12 @@ If you previously uploaded `casual-mobile-art-director` to claude.ai, remove tha
 2. `init` loads it. The 2–4 **hero** assets are made first. You see them at real sizes and approve, then the style is locked.
 3. The agent (and any subagents) claim assets, produce them, and register each attempt. Failed checks and rejections come back with reasons; each asset gets 3 attempts, then it is flagged for you.
 4. Every 15 approvals, work pauses until you've looked at a review sheet.
-5. `handback` gives you the final sheet, the manifest, flags, and the assets most likely to need a taste pass.
+5. When you ask, `place` writes the approved files into your Xcode asset catalog, Godot project or Phaser `public/` folder, moving aside anything it didn't write.
+6. `handback` gives you the final sheet, the manifest, flags, and the assets most likely to need a taste pass.
 
 ## CLI
 
-Everything is also available as `artpipeline <command>` with JSON output: `init`, `status`, `claim`, `register`, `review-sheet`, `decide`, `lock-style`, `pass-gate`, `flag`, `unflag`, `history`, `handback`, `export-manifest`.
+Everything is also available as `artpipeline <command>` with JSON output: `init`, `status`, `claim`, `register`, `review-sheet`, `decide`, `lock-style`, `pass-gate`, `flag`, `unflag`, `history`, `place`, `handback`, `export-manifest`.
 
 There are also stateless `check`, `process` and `contact-sheet` commands for one-off files.
 

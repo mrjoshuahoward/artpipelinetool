@@ -14,7 +14,7 @@ from artpipeline.errors import PipelineError
 
 STATE_DIR = ".artpipeline"
 DB_NAME = "pipeline.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -62,11 +62,19 @@ CREATE TABLE IF NOT EXISTS style_locks (
     provisional INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS staged (
-    path TEXT PRIMARY KEY,          -- relative to the root
+    path TEXT PRIMARY KEY,          -- relative to the root, absolute when outside it
     asset_id TEXT NOT NULL,
     n INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     staged_at TEXT NOT NULL
+);   -- every file the pipeline wrote (staging and placement), so it knows what it may replace
+CREATE TABLE IF NOT EXISTS placements (
+    asset_id TEXT NOT NULL,
+    target TEXT NOT NULL,          -- staging | xcassets | godot | phaser
+    n INTEGER NOT NULL,
+    files TEXT NOT NULL,           -- JSON list (relative to the root when inside it)
+    placed_at TEXT NOT NULL,
+    PRIMARY KEY (asset_id, target)
 );
 CREATE TABLE IF NOT EXISTS gates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,6 +199,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE style_locks ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
     conn.execute("""CREATE TABLE IF NOT EXISTS staged (path TEXT PRIMARY KEY, asset_id TEXT NOT NULL,
                     n INTEGER NOT NULL, sha256 TEXT NOT NULL, staged_at TEXT NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS placements (asset_id TEXT NOT NULL, target TEXT NOT NULL,
+                    n INTEGER NOT NULL, files TEXT NOT NULL, placed_at TEXT NOT NULL,
+                    PRIMARY KEY (asset_id, target))""")
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
 

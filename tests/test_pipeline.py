@@ -369,6 +369,7 @@ def test_older_pipeline_is_migrated(make_pipeline, good_png, project):
     conn = sqlite3.connect(db)
     conn.execute("ALTER TABLE style_locks DROP COLUMN provisional")
     conn.execute("DROP TABLE staged")
+    conn.execute("DROP TABLE placements")
     conn.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
     conn.commit()
     conn.close()
