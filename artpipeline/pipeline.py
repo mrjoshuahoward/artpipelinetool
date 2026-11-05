@@ -14,7 +14,9 @@ from pydantic import ValidationError
 
 from artpipeline import __version__
 from artpipeline import errors as E
-from artpipeline.checks import CheckContext, Checker, basic_checker
+from artpipeline.checks import CheckContext, Checker, imaging_checker
+from artpipeline.imaging.render import RenderError, load_rgba
+from artpipeline.imaging.sheet import SheetItem, build_sheets
 from artpipeline.errors import PipelineError
 from artpipeline.intake import load_brief
 from artpipeline.schema import AssetClass, Provenance, Settings, Style
@@ -54,7 +56,7 @@ class Pipeline:
         self,
         store: Store,
         *,
-        checker: Checker = basic_checker,
+        checker: Checker = imaging_checker,
         clock: Callable[[], datetime] = utcnow,
     ):
         self.store = store
@@ -344,6 +346,8 @@ class Pipeline:
             ctx = CheckContext(
                 palette=loads(lock["palette"]) if lock else style.palette,
                 backgrounds=klass.review_backgrounds or style.backgrounds,
+                out_dir=att_dir,
+                name=Path(loads(r["spec"])["destination"]).stem,
             )
 
         # Phase 2: checks run outside the write lock (imaging can be slow).
@@ -356,7 +360,8 @@ class Pipeline:
                 "checks": dumps(result.to_dict()),
                 "passed": int(result.passed),
                 "processed_path": _rel(result.processed_path, self.root) if result.processed_path else None,
-                "renditions": dumps(result.renditions) if result.renditions else None,
+                "renditions": dumps({k: _rel(v, self.root) for k, v in result.renditions.items()})
+                if result.renditions else None,
             }
             if result.passed:
                 status = AWAITING_REVIEW
@@ -398,18 +403,77 @@ class Pipeline:
 
     # ------------------------------------------------------------------ review
 
+    def review_sheet(
+        self,
+        asset_ids: Iterable[str] | None = None,
+        *,
+        pending_review: bool = False,
+        gate_id: int | None = None,
+        actor: str = "agent",
+    ) -> dict[str, Any]:
+        """Render a contact sheet of each asset's latest attempt at its display sizes on its review
+        backgrounds (plus greyscale), and record that those attempts were reviewed."""
+        with self.store.tx() as c:
+            if gate_id is not None:
+                ids = loads(_gate(c, gate_id)["asset_ids"])
+            elif pending_review:
+                ids = [r["id"] for r in c.execute(
+                    "SELECT id FROM assets WHERE status=? AND in_brief=1 ORDER BY ord", (AWAITING_REVIEW,))]
+            else:
+                ids = list(asset_ids or [])
+            if not ids:
+                raise PipelineError(E.INVALID_ARGUMENT, "Nothing to put on a sheet.",
+                                    hint="Pass asset_ids, pending_review=True, or a gate id.")
+            style = _style(c)
+            items = []
+            for aid in ids:
+                r = _asset(c, aid)
+                att = _latest_attempt(c, aid)
+                if att is None:
+                    raise PipelineError(E.INVALID_STATE, f"'{aid}' has no attempts to review.")
+                klass = AssetClass.model_validate(loads(r["cls"]))
+                checks = loads(att["checks"]) or {}
+                mark = "pass" if checks.get("pass") else "FAIL"
+                if checks.get("warn"):
+                    mark += f", {len(checks['warn'])} warn"
+                items.append((aid, att, klass, f"attempt {att['n']} · {mark} · {r['status']}",
+                              klass.review_backgrounds or style.backgrounds))
+        sheet_items = []
+        biggest = lambda k: max(k.display_sizes or [256])  # noqa: E731
+        for aid, att, klass, sub, bgs in items:
+            src = self.root / (att["processed_path"] or att["source_path"])
+            try:
+                w, h = klass.master
+                scale = max(1.0, 2 * biggest(klass) / max(w, h)) if klass.is_vector else 1.0
+                img = load_rgba(src, (round(w * scale), round(h * scale)))
+            except RenderError as e:
+                raise PipelineError(E.INVALID_STATE, f"'{aid}' attempt {att['n']} can't be rendered: {e}")
+            sheet_items.append(SheetItem(
+                label=aid, image=img, sizes=klass.display_sizes, backgrounds=bgs, sublabel=sub,
+                pixel_art=klass.pixel_art, icon_mask=klass.icon_mask,
+            ))
+        stamp = self.clock().strftime("%Y%m%d-%H%M%S-%f")
+        title = f"Gate {gate_id} review" if gate_id is not None else f"Review · {len(ids)} asset(s)"
+        pages = build_sheets(sheet_items, self.store.state_dir / "sheets", f"sheet-{stamp}", title)
+        rec = self.record_sheet(pages, ids, gate_id=gate_id, actor=actor)
+        rec["pages"] = [str(p) for p in pages]
+        rec["next"] = ("Look at every page at display size (and show the user at gates), then "
+                       + (f"pass_gate({gate_id}, by='user')." if gate_id is not None else "decide each asset."))
+        return rec
+
     def record_sheet(
         self,
-        path: Path | str,
+        paths: Path | str | Iterable[Path | str],
         asset_ids: Iterable[str],
         *,
         gate_id: int | None = None,
         actor: str = "agent",
     ) -> dict[str, Any]:
-        """Record that a contact sheet showing the latest attempt of each asset was produced.
-        The imaging layer (M2) renders the sheet and calls this."""
+        """Record that contact-sheet pages showing the latest attempt of each asset exist.
+        review_sheet renders and calls this; it is public for sheets built elsewhere."""
         now = self._now()
         ids = list(asset_ids)
+        paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
         with self.store.tx() as c:
             items = []
             for aid in ids:
@@ -419,8 +483,8 @@ class Pipeline:
                     raise PipelineError(E.INVALID_STATE, f"'{aid}' has no attempts to review.")
                 items.append([aid, att["n"]])
             cur = c.execute(
-                "INSERT INTO sheets(created_at, path, items) VALUES (?,?,?)",
-                (now, _rel(Path(path), self.root), dumps(items)),
+                "INSERT INTO sheets(created_at, paths, items) VALUES (?,?,?)",
+                (now, dumps([_rel(Path(x), self.root) for x in paths]), dumps(items)),
             )
             sheet_id = cur.lastrowid
             for aid, n in items:
@@ -435,7 +499,7 @@ class Pipeline:
                     )
                 c.execute("UPDATE gates SET sheet_id=? WHERE id=?", (sheet_id, gate_id))
             _event(c, now, actor, "sheet", None, sheet_id=sheet_id, items=items, gate_id=gate_id)
-        return {"sheet_id": sheet_id, "path": str(path), "items": items, "gate_id": gate_id}
+        return {"sheet_id": sheet_id, "paths": [str(x) for x in paths], "items": items, "gate_id": gate_id}
 
     def decide(
         self,

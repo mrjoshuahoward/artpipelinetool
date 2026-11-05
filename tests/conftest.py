@@ -93,7 +93,7 @@ def good_png(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def bad_png(tmp_path: Path) -> Path:
-    return make_png(tmp_path / "gen" / "bad.png", size=(100, 100))
+    return make_png(tmp_path / "gen" / "bad.png", size=(32, 32))  # smaller than master: refused
 
 
 @pytest.fixture

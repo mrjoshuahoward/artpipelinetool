@@ -85,13 +85,141 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("asset_id", nargs="?")
     s.add_argument("--limit", type=int, default=200)
 
+    s = sub.add_parser("review-sheet", help="Render a contact sheet of latest attempts and mark them reviewed")
+    s.add_argument("asset_ids", nargs="*")
+    s.add_argument("--pending", action="store_true", help="All assets awaiting review")
+    s.add_argument("--gate", type=int, dest="gate_id")
+
     sub.add_parser("export-manifest", help="Rewrite art-manifest.json")
+
+    # Stateless utilities (no pipeline needed); they replace the skill's scripts.
+    s = sub.add_parser("check", help="Objective checks on image files (exit 1 if any fail)")
+    s.add_argument("files", nargs="+", type=Path)
+    _class_flags(s)
+
+    s = sub.add_parser("process", help="Process one source into a class master + renditions, then check it")
+    s.add_argument("source", type=Path)
+    s.add_argument("out_dir", type=Path)
+    s.add_argument("--name", help="Output base name (default: source stem)")
+    _class_flags(s)
+    s.add_argument("--remove-bg", action="store_true")
+    s.add_argument("--trim", action="store_true")
+    s.add_argument("--clamp", choices=["hard", "soft", "off"])
+    s.add_argument("--flatten", metavar="HEX")
+    s.add_argument("--scales", help="Renditions as scale factors, e.g. 1,2,3 (suffix @Nx)")
+
+    s = sub.add_parser("contact-sheet", help="Contact sheet of image files at display sizes on backgrounds")
+    s.add_argument("out", type=Path)
+    s.add_argument("files", nargs="+", type=Path)
+    s.add_argument("--sizes", default="256,64,24")
+    s.add_argument("--bg", default="#1C1C1E,#F2F2F7")
+    s.add_argument("--labels")
+    s.add_argument("--icon-mask", action="store_true")
+    s.add_argument("--pixel", action="store_true")
     return p
 
 
-def run(argv: list[str] | None = None) -> tuple[int, dict[str, Any]]:
+def _class_flags(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--class", dest="klass", help="Preset class to start from (e.g. game_center_badge)")
+    s.add_argument("--size", help="Master size WxH")
+    s.add_argument("--alpha", choices=["required", "forbidden", "any"])
+    s.add_argument("--palette", help="Comma-separated hexes, or a file with one hex per line")
+    s.add_argument("--bg", dest="backgrounds", help="Comma-separated background hexes")
+    s.add_argument("--min-in-palette", type=float)
+    s.add_argument("--max-de", type=float)
+    s.add_argument("--pixel-art", action="store_true")
+
+
+def _hexes(v: str | None) -> list[str]:
+    if not v:
+        return []
+    path = Path(v)
+    if path.is_file():
+        vals = [ln.split("//")[0].strip() for ln in path.read_text().splitlines()]
+        return [x.split()[0] for x in vals if x]
+    return [h.strip() for h in v.split(",") if h.strip()]
+
+
+def _adhoc_class(a: argparse.Namespace, default_format: str):
+    from artpipeline.presets import PRESETS
+    from artpipeline.schema import AssetClass
+
+    base = PRESETS[a.klass].model_dump() if a.klass else {"format": default_format, "master": (1024, 1024)}
+    if a.klass and a.klass not in PRESETS:
+        raise PipelineError("INVALID_ARGUMENT", f"Unknown preset '{a.klass}'.", known=sorted(PRESETS))
+    if a.size:
+        w, _, h = a.size.lower().partition("x")
+        base["master"] = (int(w), int(h or w))
+    if a.alpha:
+        base["alpha"] = a.alpha
+    if a.min_in_palette is not None:
+        base["checks"]["palette_min_share"] = a.min_in_palette
+    if a.max_de is not None:
+        base["checks"]["palette_max_de"] = a.max_de
+    if a.pixel_art:
+        base["pixel_art"] = True
+    proc = base.setdefault("processing", {})
+    for flag, key in (("remove_bg", "remove_bg"), ("trim", "trim")):
+        if getattr(a, flag, False):
+            proc[key] = True
+    if getattr(a, "clamp", None):
+        proc["palette_clamp"] = a.clamp
+    if getattr(a, "flatten", None):
+        proc["flatten"] = a.flatten
+    if getattr(a, "scales", None):
+        base["renditions"] = [{"suffix": f"@{s.strip()}x", "scale": float(s)} for s in a.scales.split(",")]
+    return AssetClass.model_validate(base)
+
+
+def _stateless(a: argparse.Namespace) -> tuple[int, Any]:
+    from artpipeline.checks import CheckContext, imaging_checker, options_for
+    from artpipeline.imaging.analyze import analyze
+    from artpipeline.imaging.render import RenderError, load_rgba
+    from artpipeline.imaging.sheet import SheetItem, build_sheets
+
+    if a.cmd == "contact-sheet":
+        sizes = [int(x) for x in a.sizes.split(",")]
+        labels = a.labels.split(",") if a.labels else [f.stem for f in a.files]
+        items = [SheetItem(label=lab, image=load_rgba(f, (max(1024, max(sizes)),) * 2), sizes=sizes,
+                           backgrounds=_hexes(a.bg), pixel_art=a.pixel, icon_mask=a.icon_mask)
+                 for f, lab in zip(a.files, labels)]
+        pages = build_sheets(items, a.out.parent, a.out.stem)
+        return 0, {"pages": [str(p) for p in pages]}
+
+    palette, bgs = _hexes(a.palette), _hexes(a.backgrounds)
+    if a.cmd == "check":
+        results = []
+        for f in a.files:
+            cls = _adhoc_class(a, "svg" if f.suffix.lower() == ".svg" else "png")
+            try:
+                img = load_rgba(f, tuple(cls.master))
+            except RenderError as e:
+                results.append({"file": str(f), "pass": False, "fail": [str(e)], "warn": []})
+                continue
+            size = tuple(cls.master) if (a.klass or a.size) else None
+            fd = analyze(img, options_for(cls, palette, bgs or cls.review_backgrounds, size=size))
+            results.append({"file": str(f), "pass": fd.passed, "fail": fd.fail, "warn": fd.warn,
+                            "metrics": fd.metrics})
+        return (0 if all(r["pass"] for r in results) else 1), results
+
+    # process
+    if not (a.klass or a.size):
+        raise PipelineError("INVALID_ARGUMENT", "process needs --class or --size to know the master.")
+    cls = _adhoc_class(a, "png")  # sources (incl. SVG) are processed into a raster master
+    if not a.source.is_file():
+        raise PipelineError("SOURCE_NOT_FOUND", f"Source file not found: {a.source}")
+    res = imaging_checker(a.source, cls, CheckContext(palette=palette, backgrounds=bgs or cls.review_backgrounds,
+                                                      out_dir=a.out_dir, name=a.name or a.source.stem))
+    out = {"processed": str(res.processed_path) if res.processed_path else None,
+           "renditions": {k: str(v) for k, v in res.renditions.items()}, **res.to_dict()}
+    return (0 if res.passed else 1), out
+
+
+def run(argv: list[str] | None = None) -> tuple[int, Any]:
     a = _parser().parse_args(argv)
     try:
+        if a.cmd in ("check", "process", "contact-sheet"):
+            return _stateless(a)
         if a.cmd == "init":
             _, out = Pipeline.init(a.brief, a.root)
             return 0, out
@@ -121,6 +249,8 @@ def run(argv: list[str] | None = None) -> tuple[int, dict[str, Any]]:
             out = p.unflag(a.asset_id, a.by, a.action, a.extra_attempts, a.notes)
         elif a.cmd == "history":
             out = p.history(a.asset_id, a.limit)
+        elif a.cmd == "review-sheet":
+            out = p.review_sheet(a.asset_ids, pending_review=a.pending, gate_id=a.gate_id)
         elif a.cmd == "export-manifest":
             out = p.export_manifest()
         else:  # pragma: no cover

@@ -200,9 +200,36 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 | M | Scope | Done when |
 |---|---|---|
 | **M1 Core** ✅ 2026-11-04 | Schema, store, state machine, leases, gates, intake, CLI | Unit tests cover every transition and error code; concurrent-claim test with 8 workers |
-| **M2 Imaging** | Port and test the skill's checks, processing, exports and contact sheets; `resvg-py` rendering | Same verdicts as the skill's scripts on the eval assets |
+| **M2 Imaging** ✅ 2026-11-04 | Port and test the skill's checks, processing, exports and contact sheets; `resvg-py` rendering | Same verdicts as the skill's scripts on the eval assets. **Result:** check metrics (mean, palette share and worst ΔE, contrast) and pass/fail match the skill on the test fixtures, and Lanczos exports match pixel for pixel. Clamping differs on fewer than 2% of pixels (exact-colour cache instead of the skill's order-dependent bucketed cache). The skill's evals left no saved assets to compare, so parity was tested on fixtures. Deliberate departures: see §12 |
 | **M3 MCP + plugin** | FastMCP server, structured outputs, inline images, plugin packaging; update the skill's `production-loop.md` to use the tool | Badges eval runs end to end in Claude Code through the plugin |
 | **M4 Placement** | Staging, xcassets, godot, phaser | Sorting Line badges placed into a scratch copy and verified in the simulator |
 | **M5 Eval and release** | Run the skill's evals with and without the tool; README; 2.0.0 tag | Pass rate ≥ skill alone; fewer manifest errors and gate violations; cost and time reported |
 
 Evals reuse `casual-mobile-art-director/evals/` (Sorting Line, read-only). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.
+
+## 12. Imaging notes (M2)
+
+**Where v2 deliberately differs from the skill's scripts:**
+
+| Area | Skill scripts | v2 | Why |
+|---|---|---|---|
+| Halo check | Compares soft edge pixels with the asset's *global* mean colour | Compares each soft edge pixel with the solid pixels within 2 px | The global version fails healthy keylined art at small sizes. A 44 px light icon with a dark outline scores 87% "halo". The local version still fails real matte fringes (tested). |
+| Greyscale read | Described, never computed | Warns when colours differ mostly in hue (hue spread > 25, lightness range < 10) | Catches red/green-at-equal-lightness art that vanishes in greyscale or for colour-blind players. Warn only. |
+| Contact sheets | Squares every asset; Lanczos for everything; one size/background set per sheet | Keeps aspect; nearest-neighbour for pixel art; per-asset sizes and backgrounds; a background margin round every tile; pages of 12 | Screenshots were distorted, pixel art blurred, and opaque art could not be judged against the background at full size. |
+| Palette clamp cache | Bucketed by 6-bit colour, first pixel seen wins | Exact colour | The skill's result depends on scan order. |
+| SVG rendering | rsvg-convert → Inkscape → cairosvg → Playwright (none installed on the author's machine) | Bundled `resvg-py` | Works out of the box. |
+
+**Processing order** (raster classes):
+1. Load the source, or render an SVG source at the master size.
+2. `remove_bg`: a chroma key connected to the border, so enclosed areas of the same colour survive.
+3. `trim`.
+4. Fit to the master: never upscale; aspect must match unless trimmed (then pad to fit); pixel art needs integer factors.
+5. `flatten`.
+6. `palette_clamp`. Flattening comes before clamping; the other order leaves anti-aliased edges off-palette.
+7. Renditions: re-rendered from SVG when possible, otherwise downscaled.
+
+A processing refusal, such as an upscale, is a check failure, so it feeds the retry loop.
+
+**Still to do:**
+- A VectorCraft render backend, blocked until `vectorcraft-cli` is installed and its export syntax verified.
+- The skill's `scripts/` stay in place until M3 switches the skill to `artpipeline check / process / contact-sheet` and the MCP tools.

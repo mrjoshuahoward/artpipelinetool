@@ -12,12 +12,12 @@ PRESETS: dict[str, AssetClass] = {
     # Flattened 1024 App Store icon: no alpha, judged on wallpapers and system backgrounds.
     "ios_app_icon_flat": AssetClass(
         format="png", master=(1024, 1024), alpha="forbidden",
-        display_sizes=[180, 120, 60], review_backgrounds=[*IOS_SYSTEM_BGS, "#3A6EA5"],
+        display_sizes=[180, 120, 60], review_backgrounds=[*IOS_SYSTEM_BGS, "#3A6EA5"], icon_mask=True,
     ),
     # One Icon Composer layer: transparent, crisp edges, no baked gloss.
     "ios_app_icon_layer": AssetClass(
         format="png", master=(1024, 1024), alpha="required",
-        display_sizes=[180, 60], review_backgrounds=IOS_SYSTEM_BGS,
+        display_sizes=[180, 60], review_backgrounds=IOS_SYSTEM_BGS, icon_mask=True,
     ),
     # Game Center achievement art: opaque, shown on light and dark system backgrounds.
     "game_center_badge": AssetClass(

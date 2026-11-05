@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "Pillow>=11.0",
     "PyYAML>=6.0.2",
+    "resvg-py>=0.5",
 ]
 
 [project.optional-dependencies]

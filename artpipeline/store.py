@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS gates (
 CREATE TABLE IF NOT EXISTS sheets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
-    path TEXT NOT NULL,
+    paths TEXT NOT NULL,           -- JSON list of page images
     items TEXT NOT NULL            -- [[asset_id, n], ...]
 );
 CREATE TABLE IF NOT EXISTS events (

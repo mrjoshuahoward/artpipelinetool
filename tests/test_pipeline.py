@@ -120,7 +120,7 @@ def test_failed_checks_retry_then_flag(make_pipeline, bad_png):
     p.claim("main", asset_ids=["badge_00"])
     r1 = p.register_attempt("badge_00", bad_png, "main", PROV)
     assert r1["status"] == "in_progress" and r1["attempts_left"] == 2
-    assert "size 100x100 != master 64x64" in r1["checks"]["fail"]
+    assert "smaller than master" in r1["checks"]["fail"][0]
 
     with pytest.raises(PipelineError) as e:
         p.register_attempt("badge_00", bad_png, "main", PROV)
@@ -172,9 +172,11 @@ def test_register_guards(make_pipeline, good_png, tmp_path):
         p.register_attempt("badge_00", good_png, "main", {"route": "magic", "tool": "x"})
     assert code(e) == E.INVALID_ARGUMENT
     svg = tmp_path / "icon.svg"
-    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44"/>')
+    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">'
+                   '<circle cx="22" cy="22" r="16" fill="#22B8B0"/></svg>')
     r = p.register_attempt("badge_01", svg, "main", PROV)
-    assert r["status"] == "awaiting_review" and r["checks"]["warn"]
+    assert r["status"] == "awaiting_review", r
+    assert r["checks"]["metrics"]["renditions"] == {"@1x": "44x44", "@2x": "88x88", "@3x": "132x132"}
     assert (p.root / r["stored"]).is_file()
 
 
@@ -285,7 +287,7 @@ def test_manifest_records_provenance(make_pipeline, good_png, project):
     doc = json.loads((project / "art-manifest.json").read_text())
     a = doc["assets"][0]
     assert a["status"] == "approved" and a["attempts"] == 1
-    assert a["approved"]["file"] == ".artpipeline/attempts/badge_00/1/source.png"
+    assert a["approved"]["file"] == ".artpipeline/attempts/badge_00/1/badge_00.png"
     assert a["approved"]["seed"] == 7 and a["approved"]["approved_by"] == "user"
     assert a["approved"]["rights"] == "original (code-authored)"
     kinds = [e["kind"] for e in p.history("badge_00")["events"]]

@@ -32,9 +32,9 @@ class Rendition(_Strict):
 
 class CheckConfig(_Strict):
     halo: bool = True
-    palette_min_share: float | None = Field(default=None, ge=0, le=1)
+    palette_min_share: float | None = Field(default=0.85, ge=0, le=1)  # null disables
     palette_max_de: float = 12.0
-    min_contrast: float | None = Field(default=None, gt=0)
+    min_contrast: float | None = Field(default=1.6, gt=0)  # warn-only, as in the skill
     greyscale_read: bool = True
 
 
@@ -55,6 +55,7 @@ class AssetClass(_Strict):
     checks: CheckConfig = Field(default_factory=CheckConfig)
     processing: Processing = Field(default_factory=Processing)
     pixel_art: bool = False
+    icon_mask: bool = False            # round tiles like an iOS icon on contact sheets
 
     @field_validator("review_backgrounds")
     @classmethod
