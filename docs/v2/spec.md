@@ -72,7 +72,7 @@ skills/casual-mobile-art-director/   the skill (moved here from its own repo; si
 art-manifest.json          generated; git-friendly snapshot of every asset and its approved attempt
 ```
 
-By default, `init` adds `.artpipeline/` to the project's `.gitignore`, because attempt files are large. `art-manifest.json` is meant to be committed.
+`init` writes `.artpipeline/.gitignore` containing `*`, so attempt files stay out of git without editing the user's own `.gitignore`. `art-manifest.json` is meant to be committed.
 
 ## 4. Data model
 
@@ -131,7 +131,7 @@ pending ──claim──▶ in_progress ──register──▶ checking ──
 | An attempt with n > 1 must state `change_from_previous` | — | `NO_CAUSE_CHANGE`: "change the cause, don't reroll" |
 | Approval requires a passing attempt and that attempt on a contact sheet | — | `NOT_REVIEWED` |
 | Claims pause once agent-approved assets since the last gate reach the threshold, until a batch gate is passed | 15 | `GATE_DUE`: returns the sheet to show the user |
-| Leases expire, and the asset returns to `pending` | 30 min | — |
+| Leases expire, and the asset becomes claimable again. A plain claim never returns an agent's own live leases; naming the asset in `asset_ids` renews the lease | 30 min | `LEASED_BY_OTHER` |
 
 `approved_by: user` works on the honour system: the tool can't verify who decided, but it records the claim and the skill must only set it after the user actually responds. That honour system is acceptable here because the threat model is drift, not deception.
 
@@ -199,7 +199,7 @@ Before any write, existing files are moved to `superseded/` with a timestamp, un
 
 | M | Scope | Done when |
 |---|---|---|
-| **M1 Core** | Schema, store, state machine, leases, gates, intake, CLI | Unit tests cover every transition and error code; concurrent-claim test with 8 workers |
+| **M1 Core** ✅ 2026-11-04 | Schema, store, state machine, leases, gates, intake, CLI | Unit tests cover every transition and error code; concurrent-claim test with 8 workers |
 | **M2 Imaging** | Port and test the skill's checks, processing, exports and contact sheets; `resvg-py` rendering | Same verdicts as the skill's scripts on the eval assets |
 | **M3 MCP + plugin** | FastMCP server, structured outputs, inline images, plugin packaging; update the skill's `production-loop.md` to use the tool | Badges eval runs end to end in Claude Code through the plugin |
 | **M4 Placement** | Staging, xcassets, godot, phaser | Sorting Line badges placed into a scratch copy and verified in the simulator |
