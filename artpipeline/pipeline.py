@@ -734,10 +734,26 @@ class Pipeline:
         klass = loads(r["cls"])
         asset = {k: spec.get(k) for k in ("id", "subject", "group", "destination")}
         try:
-            return compile_recipe(self.root, recipe, tokens=tokens, asset=asset, master=tuple(klass["master"]))
+            return compile_recipe(self.root, recipe, tokens=tokens, asset=asset, master=tuple(klass["master"]),
+                                  assets=self._approved_file)
         except BuildError as e:
             raise PipelineError(E.BUILD_FAILED, f"'{r['id']}': {e}",
                                 hint="Fix the recipe and build again; no attempt was used.") from None
+
+    def _approved_file(self, asset_id: str) -> Path:
+        """The approved output of another asset, for compose `asset` layers."""
+        with self.store.tx() as c:
+            r = c.execute("SELECT status FROM assets WHERE id=?", (asset_id,)).fetchone()
+            att = _approved_attempt(c, asset_id)
+        if r is None:
+            raise BuildError(f"layer asset '{asset_id}' is not in the pipeline")
+        if att is None or r["status"] not in (APPROVED, PLACED):
+            raise BuildError(f"layer asset '{asset_id}' is {r['status']}; build it from approved art, "
+                             "so approve that asset first")
+        p = self.root / (att["processed_path"] or att["source_path"])
+        if not p.is_file():
+            raise BuildError(f"approved file of '{asset_id}' is missing: {_rel(p, self.root)}")
+        return p
 
     def _built_file(self, asset_id: str, compiled) -> Path:
         d = self.store.state_dir / "build" / asset_id

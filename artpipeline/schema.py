@@ -78,15 +78,82 @@ def _recipe_path(v: str | None) -> str | None:
     return v
 
 
+COLOR_REF = r"^(#[0-9A-Fa-f]{6}|\$[A-Za-z][A-Za-z0-9_-]*|\{\{[^{}]+\}\})$"
+
+
+class Shadow(_Strict):
+    dx: float = 0
+    dy: float = 8
+    blur: float = Field(default=12, ge=0)
+    color: str = Field(default="#000000", pattern=COLOR_REF)
+    opacity: float = Field(default=0.35, ge=0, le=1)
+
+
+class Layer(_Strict):
+    """One layer of a `compose` recipe, drawn bottom to top. Exactly one of svg, image, asset, text
+    or fill says what it is. Boxes are in master pixels; `size` defaults to the whole canvas."""
+
+    svg: str | None = None           # an SVG recipe file (tokens, params, shapes, ap:text all work)
+    image: str | None = None         # a raster or SVG file, embedded
+    asset: str | None = None         # another asset's approved output (key art from approved sprites)
+    text: str | None = None          # drawn as outlines from `font`; newlines break lines
+    fill: str | None = Field(default=None, pattern=COLOR_REF)   # a solid (rounded) rectangle
+
+    at: tuple[float, float] = (0, 0)
+    size: tuple[float, float] | None = None
+    fit: Literal["contain", "cover", "stretch"] = "contain"
+    radius: float = Field(default=0, ge=0)       # rounded corners for fill, image and asset layers
+    opacity: float = Field(default=1, ge=0, le=1)
+    rotate: float = 0                             # degrees clockwise about the box centre
+    shadow: Shadow | None = None
+    params: dict[str, str | int | float | bool] = Field(default_factory=dict)  # svg layers
+
+    font: str | None = None
+    font_size: float | None = Field(default=None, gt=0)
+    color: str = Field(default="#000000", pattern=COLOR_REF)
+    anchor: Literal["start", "middle", "end"] = "start"
+    valign: Literal["baseline", "top", "middle", "bottom"] = "baseline"
+    max_width: float | None = Field(default=None, gt=0)
+    shrink: bool = False                          # scale the text down to fit max_width instead of wrapping
+    line_height: float = Field(default=1.2, gt=0)
+    letter_spacing: float = 0
+    axes: dict[str, float] = Field(default_factory=dict)   # variable font axes, e.g. {wght: 800}
+    stroke: str | None = Field(default=None, pattern=COLOR_REF)
+    stroke_width: float = Field(default=0, ge=0)
+
+    @field_validator("svg", "image", "font")
+    @classmethod
+    def _paths(cls, v: str | None) -> str | None:
+        return _recipe_path(v)
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "Layer":
+        kinds = [k for k in ("svg", "image", "asset", "text", "fill") if getattr(self, k) is not None]
+        if len(kinds) != 1:
+            raise ValueError(f"a layer needs exactly one of svg, image, asset, text or fill (got {kinds or 'none'})")
+        if self.text is not None and not (self.font and self.font_size):
+            raise ValueError("a text layer needs font (a committed .ttf/.otf) and font_size")
+        if self.params and self.svg is None:
+            raise ValueError("layer params apply only to svg layers")
+        return self
+
+    @property
+    def kind(self) -> str:
+        return next(k for k in ("svg", "image", "asset", "text", "fill") if getattr(self, k) is not None)
+
+
 class BuildSpec(_Strict):
     """How artpipeline builds an asset itself (2.1). Paths are relative to the pipeline root.
-    B1 supports kind 'svg': an SVG source and/or a shared template with <ap:slot/>, filled with
-    params and the style's named colour tokens."""
+    kind 'svg': an SVG source and/or a shared template with <ap:slot/>, filled with params and the
+    style's named colour tokens. kind 'compose': a stack of layers (SVG recipes, images, other
+    approved assets, text, fills) on a canvas the size of the master."""
 
-    kind: Literal["svg"] = "svg"
+    kind: Literal["svg", "compose"] = "svg"
     source: str | None = None
     template: str | None = None
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    background: str | None = Field(default=None, pattern=COLOR_REF)   # compose
+    layers: list[Layer] = Field(default_factory=list)                  # compose
 
     @field_validator("source", "template")
     @classmethod
@@ -98,12 +165,22 @@ class BuildSpec(_Strict):
         if base is None:
             return self
         set_ = self.model_fields_set
-        return BuildSpec(
-            kind=self.kind if "kind" in set_ else base.kind,
-            source=self.source if "source" in set_ else base.source,
-            template=self.template if "template" in set_ else base.template,
-            params={**base.params, **self.params},
-        )
+        pick = {k: getattr(self if k in set_ else base, k) for k in ("kind", "source", "template", "background")}
+        return BuildSpec(**pick, params={**base.params, **self.params},
+                         layers=self.layers if "layers" in set_ else base.layers)
+
+    def problem(self) -> str | None:
+        if self.kind == "svg":
+            if self.layers or self.background:
+                return "layers and background belong to kind 'compose'"
+            if not (self.source or self.template):
+                return "build needs a source, a template, or both"
+        else:
+            if self.source or self.template:
+                return "kind 'compose' uses layers, not source/template"
+            if not self.layers:
+                return "kind 'compose' needs at least one layer"
+        return None
 
 
 class GroupSpec(_Strict):
@@ -222,8 +299,23 @@ class BriefManifest(_Strict):
             group = self.groups.get(a.group) if a.group else None
             if group is not None and group.build is not None:
                 a.build = a.build.merged_over(group.build) if a.build else group.build.model_copy(deep=True)
-            if a.build is not None and not (a.build.source or a.build.template):
-                raise ValueError(f"asset '{a.id}': build needs a source, a template, or both")
+            if a.build is not None and (why := a.build.problem()):
+                raise ValueError(f"asset '{a.id}': {why}")
+        uses = {a.id: [ly.asset for ly in a.build.layers if ly.asset] for a in self.assets if a.build}
+        for aid, deps in uses.items():
+            for d in deps:
+                if d not in seen:
+                    raise ValueError(f"asset '{aid}': layer asset '{d}' is not in the brief")
+        for aid in uses:  # a compose asset can't (indirectly) contain itself
+            stack, path = [aid], set()
+            while stack:
+                cur = stack.pop()
+                for d in uses.get(cur, []):
+                    if d == aid:
+                        raise ValueError(f"asset '{aid}' contains itself through its layers")
+                    if d not in path:
+                        path.add(d)
+                        stack.append(d)
         return self
 
     def resolve_class(self, asset: AssetSpec) -> AssetClass:

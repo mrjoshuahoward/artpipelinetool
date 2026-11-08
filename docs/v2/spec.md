@@ -262,7 +262,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 14. Building assets (2.1)
 
-Status: **B1 done (2026-11-07)** · branch `v2.1`
+Status: **B1 done (2026-11-07), B2 done (2026-11-08)** · branch `v2.1`
 
 ### Why
 
@@ -286,9 +286,17 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
 | Kind | Milestone | What it builds |
 |---|---|---|
 | `svg` | **B1** ✅ | `source` and/or `template`. Substitutes `{{tokens.x}}`, `{{params.x}}` and `{{asset.id}}`; a param value `$x` names a token. Fills `<ap:slot>`/`<ap:part>`, inlines `<ap:include>`, embeds local `<image>` files, and expands the shape library (`ap:star`, `polygon`, `ring`, `arc`, `gear`, `burst`) to plain SVG. Rendered by the bundled resvg. |
-| `compose` | B2 | A layer stack of raster and SVG layers plus text (fonts converted to outlines), for store screenshots, flat icons from layers, and key art. |
+| `compose` | **B2** ✅ | A layer stack on a canvas the size of the master: `svg` (a recipe file), `image` (local raster/SVG), `asset` (another asset's approved output), `text`, `fill`. Per-layer box, fit, rounded clip, opacity, rotation and drop shadow. Compiles to one SVG, so raster classes render through the same resvg pass. For store screenshots, key art and layered icons. |
 | `derive` | B3 | Built from approved assets: sprite sheets and texture atlases (Phaser atlas JSON, Godot `AtlasTexture`, `.spriteatlas`), plus `place` support. |
 | `script` | B4 | An agent-written script with declared inputs and outputs, hashed. The fallback for anything the other kinds can't express. |
+
+### Text (B2)
+
+`<ap:text>` (in any SVG recipe) and compose `text` layers draw text from a **committed font file** into plain `<path>` outlines with fontTools. Built files never depend on the fonts of the machine that renders them, and plain `<text>` in a recipe is a `BUILD_FAILED`.
+- Layout: cmap lookup, advances, and pair kerning (GPOS `kern` pair adjustments, else the legacy `kern` table). There are no ligatures and no contextual shaping, so Arabic and Indic scripts are out of scope: draw those elsewhere and register them. A missing glyph is an error naming the characters.
+- Options: anchor, cap-height vertical alignment, `max-width` with wrap or shrink-to-fit, line height, letter spacing, variable-font axes, and `font-index` for collections. Paint attributes pass through.
+- The font file is a build input (sha256 recorded). Fingerprints cover the drawn output, so a font edit makes an asset stale only where it changes the outlines.
+- resvg-py was checked first: it can load explicit font files, but `<text>` would still leave the built SVG dependent on the viewer's fonts, so text is outlined instead.
 
 ### Build semantics
 
@@ -304,10 +312,11 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
   - Stale rebuilds are described automatically ("rebuilt: tokens gold #F2C14E→#F5C451").
 - **Stale tracking.** `status()` reports `recipes.stale` (plus compile errors), and `status(asset_id)` reports `stale`. `lock_style` returns the assets its change made stale. An unused token never makes an asset stale.
 - **`dry_run`** compiles and checks with the asset's real processing and returns a strip. It changes no state and works on any asset, including non-heroes before the lock.
+- **Compose dependencies.** An `asset` layer embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
 - **Failures:** a recipe that doesn't compile is `BUILD_FAILED`, and no attempt is used. An asset without a recipe is `NO_RECIPE`.
 - **Schema v4:** adds `attempts.build` and `style_locks.tokens`, migrated in place from v3.
 
 ### Validation plan
 
-- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`).
+- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), plus text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored).
 - After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.

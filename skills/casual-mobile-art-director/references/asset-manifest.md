@@ -90,4 +90,38 @@ An asset with a `build:` entry is built by artpipeline from committed recipe fil
   - `<ap:arc cx cy r start end sector=false>`
   - `<ap:gear cx cy r teeth depth=0.18 hole=0>`
   - `<ap:burst cx cy r rays inner=0 width=0.5>`
-- Builds are deterministic, so artpipeline knows when a recipe, template, include, param or token change makes an asset **stale**, and `build(stale=true)` rebuilds exactly those.
+- **Text: `<ap:text font="../fonts/Title.ttf" font-size="96" x="512" y="835">{{label}}</ap:text>`** draws the text from a committed `.ttf`/`.otf` as plain outlines, so the built file never depends on the fonts of the machine that shows it. Plain `<text>` is refused. Options:
+  - `text-anchor` (start|middle|end) and `valign` (baseline|top|middle|bottom, measured on cap height, so `middle` centres capitals in a banner).
+  - `max-width` with `fit="wrap"` (break at spaces) or `fit="shrink"` (scale down until it fits: good for long localised titles).
+  - `line-height` (×size, default 1.2), `letter-spacing` (px), `axes="wght=800"` for variable fonts, `<ap:br/>` for a line break.
+  - fill, stroke, `paint-order="stroke"` and the like pass through to the path.
+  - Shaping is simple (pair kerning, no ligatures or contextual scripts): fine for Latin, Greek and Cyrillic UI text. Check the font's licence allows embedding before committing it.
+- Builds are deterministic, so artpipeline knows when a recipe, template, include, font, param or token change makes an asset **stale**, and `build(stale=true)` rebuilds exactly those.
+
+### `kind: compose`: store screenshots, key art, layered icons
+
+A compose recipe stacks layers, bottom to top, on a canvas the size of the class master. Each layer has exactly one of:
+
+| Layer | What it draws |
+|---|---|
+| `svg: art-src/shots/sky.svg` | An SVG recipe file (tokens, params, shapes, `<ap:text>` all work). Layer `params` merge over the build's. |
+| `image: art-src/shots/level3.png` | A local raster or SVG file, embedded: a gameplay capture, a painted background, a device frame. |
+| `asset: first-bloom` | Another asset's **approved** output. Key art from approved sprites, an icon on a banner. |
+| `text: "{{params.caption}}"` | Outlined text: needs `font` and `font_size`; `color`, `anchor`, `valign`, `max_width` + `shrink`, `line_height`, `letter_spacing`, `axes`, `stroke` + `stroke_width`. Newlines break lines. |
+| `fill: $gold` | A solid rectangle (rounded with `radius`). |
+
+Every layer takes `at: [x, y]`, `size: [w, h]` (default: the whole canvas), `fit` (contain|cover|stretch), `radius` (rounded clip for image, asset and svg layers), `opacity`, `rotate` (degrees about the box centre) and `shadow: {dx, dy, blur, color, opacity}`. Colours are `#RRGGBB`, `$token` or `{{...}}`. The build also takes `background` and `params`.
+
+```yaml
+  - id: shot-1
+    class: store_screenshot
+    build:
+      kind: compose
+      params: {caption: "Sort the garden\nbefore it blooms"}
+      layers:
+        - {svg: art-src/shots/sky.svg}
+        - {image: art-src/shots/level3.png, at: [170, 760], size: [980, 2125], fit: cover, radius: 64, shadow: {dy: 24, blur: 48}}
+        - {text: "{{params.caption}}", font: art-src/fonts/Title.ttf, font_size: 120, at: [660, 400], anchor: middle, valign: middle, max_width: 1100, shrink: true, color: $cream}
+```
+
+An `asset` layer builds only once that asset is approved (otherwise `BUILD_FAILED`, no attempt used). When the layered asset is rebuilt and approved again, the compose asset becomes stale, so a palette change flows through as: `build(stale=true)` → approve the rebuilt parts → `build(stale=true)` again for the composites.

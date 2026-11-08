@@ -46,10 +46,13 @@ INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typ
 For sets larger than a handful, use register_attempts and decide_batch (one call per batch, one
 grid view of everything that passed) and check_image(asset_id=...) to pre-check drafts for free.
 Assets with a `build:` recipe in the brief are built by artpipeline itself: write or edit the recipe
-files (SVG with {{tokens.name}} colours, <ap:slot/> templates, <ap:star>/<ap:gear>/... shapes), then
+files (SVG with {{tokens.name}} colours, <ap:slot/> templates, <ap:star>/<ap:gear>/... shapes,
+<ap:text font=...> drawn from a committed font; or kind: compose layer stacks for store screenshots and
+key art, which can layer other approved assets), then
 build(asset_ids | group) — it claims, compiles, registers and checks in one call (dry_run=true to
 iterate for free). After a recipe, template or token change, build(stale=true) rebuilds every
-affected asset for review. Don't write throwaway generator scripts for recipe assets.
+affected asset for review (including compose assets whose layer asset was re-approved). Don't write
+throwaway generator scripts for recipe assets.
 4. place(target=...) writes approved art into the game project (xcassets, godot, phaser) only when
    the user asks for it; a read-only or unknown project gets target="staging" (ART-INSTALL.md).
 5. handback() at the end. by="user" means the user said so in this conversation; never set it on
@@ -317,7 +320,7 @@ def build(
     asset_ids: Annotated[list[str] | None, Field(description="Assets to build (each needs a build: recipe)")] = None,
     group: Annotated[str | None, Field(description="Build every buildable asset in this group")] = None,
     stale: Annotated[bool, Field(description="Only assets whose recipe output changed since their last "
-                                 "build (edited source/template/include, params, or token colours)")] = False,
+                                 "build (edited source/template/include/font, layers, params, token colours, or a re-approved layer asset)")] = False,
     change_from_previous: Annotated[str | None, Field(
         description="Required when rebuilding after a rejection or failed checks: what you changed and why. "
         "The recipe diff is appended automatically")] = None,
