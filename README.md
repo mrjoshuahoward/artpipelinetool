@@ -1,6 +1,6 @@
 # artpipeline
 
-> **v2 is in development on the `v2` branch.** The released v1 (May 2026, a browser-driven CLI) is at tag [`v0.1.0`](../../tree/v0.1.0).
+> **This is v2 (Nov 2026).** The original v1 (May 2026, a browser-driven CLI) is at tag [`v0.1.0`](../../tree/v0.1.0).
 
 A Claude Code plugin that lets an agent produce a full set of casual-mobile game art (icons, sprites, badges, UI, store art) that is correct, consistent, reviewable and reproducible. It pairs:
 
@@ -59,8 +59,10 @@ claude --plugin-dir . # load the working copy as a plugin
 claude plugin validate .
 
 # evals (real, billed runs; the MCP server must actually start, hence --mocks off)
-claude plugin eval . --mocks off --allow-tools Write Edit Bash 'mcp__plugin_artpipeline_artpipeline__*'
+claude plugin eval . --scaffold --mocks off --allow-tools Write Edit Bash 'mcp__plugin_artpipeline_artpipeline__*'
 ```
+
+The evals use the author's game **Sorting Line** as the test subject. It is private and not included here: each run's scaffold copies it from a local clone (`EVAL_SORTINGLINE_SRC`, default `~/developer/sortingline`), pinned to commit `06ba6cb` so results stay comparable as the game changes (`EVAL_SORTINGLINE_REF` overrides). Without a clone the scaffold stops with a clear error. To use your own game instead, point the scaffold at your repo and adjust the prompts and graders.
 
 The design and milestones are in [`docs/v2/spec.md`](docs/v2/spec.md).
 

@@ -1,3 +1,3 @@
 """artpipeline v2: state and operations engine for agent-driven game art production."""
 
-__version__ = "2.0.0.dev0"
+__version__ = "2.0.0"

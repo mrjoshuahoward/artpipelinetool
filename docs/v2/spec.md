@@ -212,7 +212,7 @@ Verified (2026-11-05): an app icon and two `ui_icon_svg` assets placed into a sc
 | **M4 Placement** | Staging, xcassets, godot, phaser | Done 2026-11-05: Sorting Line art placed into a scratch copy and verified in the simulator (badges are Game Center art, so they stay staged for App Store Connect) |
 | **M5 Eval and release** | Run the skill's evals with and without the tool; README; 2.0.0 tag | Pass rate ≥ skill alone; fewer manifest errors and gate violations; cost and time reported |
 
-Evals live at the plugin root, `evals/` (Sorting Line, read-only). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.
+Evals live at the plugin root, `evals/` (Sorting Line, read-only, copied from a local clone pinned to commit `06ba6cb`; the game is private and not vendored). Additional measures: manifest accuracy, invalid-transition attempts caught, retries per asset, and wall-clock time with parallel subagents.
 
 ## 12. Imaging notes (M2)
 
@@ -239,7 +239,6 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 **Still to do:**
 - A VectorCraft render backend, blocked until `vectorcraft-cli` is installed and its export syntax verified.
-- The skill's `scripts/` stay in place until M3 switches the skill to `artpipeline check / process / contact-sheet` and the MCP tools.
 
 ## 13. MCP and packaging notes (M3)
 

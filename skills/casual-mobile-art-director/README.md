@@ -30,7 +30,7 @@ The Pillow scripts this skill used to bundle (check, clamp, export, contact shee
 
 ## Evals
 
-The plugin's evals use the in-development game **Sorting Line** (`~/developer/sortingline`, treated as read-only) as the test subject:
+The plugin's evals use the in-development game **Sorting Line** (private; copied read-only into each run from a local clone, pinned to one commit) as the test subject:
 
 - `icon-directions-greenfield`
 - `meta-screens-tightening`
