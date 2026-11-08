@@ -1,384 +1,296 @@
+"""JSON CLI mirroring the MCP tools. stdout: one JSON document. Errors: JSON on stderr, exit 1."""
+from __future__ import annotations
+
+import argparse
 import json
-import shutil
-from dataclasses import asdict
+import sys
 from pathlib import Path
+from typing import Any
 
-import click
-
-from artpipeline import manifest, parser
-from artpipeline import review as review_mod
-
-
-def _emit(data: dict, human: bool) -> None:
-    if human:
-        click.echo(json.dumps(data, indent=2))
-    else:
-        click.echo(json.dumps(data))
+from artpipeline import __version__
+from artpipeline.errors import PipelineError
+from artpipeline.pipeline import Pipeline
+from artpipeline.store import Store
 
 
-def _load_pipeline():
-    path = Path("pipeline.json")
-    if not path.exists():
-        raise click.ClickException(
-            "pipeline.json not found. Run 'artpipeline parse <brief>' first."
-        )
-    return manifest.load(path), path
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="artpipeline", description=__doc__)
+    p.add_argument("--version", action="version", version=f"artpipeline {__version__}")
+    p.add_argument("--root", type=Path, help="Folder holding .artpipeline/ (default: search upward from cwd)")
+    p.add_argument("--pretty", action="store_true", help="Indent JSON output")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("init", help="Create or refresh the pipeline from a brief")
+    s.add_argument("brief", type=Path)
+
+    s = sub.add_parser("status", help="Pipeline overview, or one asset in full")
+    s.add_argument("asset_id", nargs="?")
+
+    s = sub.add_parser("claim", help="Lease assets and get their work packets")
+    s.add_argument("--agent", required=True)
+    s.add_argument("-n", type=int, default=1)
+    s.add_argument("--group")
+    s.add_argument("--asset", action="append", dest="asset_ids")
+
+    s = sub.add_parser("release", help="Give a claimed asset back to the queue")
+    s.add_argument("asset_id")
+    s.add_argument("--agent", required=True)
+
+    s = sub.add_parser("register", help="Register an attempt (file + provenance) and run checks")
+    s.add_argument("asset_id")
+    s.add_argument("file", type=Path)
+    s.add_argument("--agent", required=True)
+    s.add_argument("--route", required=True, choices=["code_native", "agent_app", "image_gen", "human"])
+    s.add_argument("--tool", required=True)
+    s.add_argument("--model")
+    s.add_argument("--prompt")
+    s.add_argument("--seed")
+    s.add_argument("--ref", action="append", dest="references", default=[])
+    s.add_argument("--rights")
+    s.add_argument("--notes")
+    s.add_argument("--change", dest="change_from_previous", help="Required for attempt 2+")
+
+    s = sub.add_parser("decide", help="Approve or reject the current attempt")
+    s.add_argument("asset_id")
+    s.add_argument("decision", choices=["approve", "reject"])
+    s.add_argument("--by", required=True, choices=["user", "agent"])
+    s.add_argument("--reason")
+
+    s = sub.add_parser("lock-style", help="Lock the style after the user approves the heroes")
+    s.add_argument("--by", required=True)
+    s.add_argument("--block", help="Style block text (default: the brief's)")
+    s.add_argument("--palette", help="Comma-separated hexes (default: the brief's)")
+    s.add_argument("--hero", action="append", dest="hero_ids")
+    s.add_argument("--ref", action="append", dest="references")
+    s.add_argument("--notes")
+    s.add_argument("--provisional", action="store_true",
+                   help="With --by agent: provisional lock while the user is away")
+
+    s = sub.add_parser("pass-gate", help="Record the user's sign-off on a review gate")
+    s.add_argument("gate_id", type=int)
+    s.add_argument("--by", required=True)
+    s.add_argument("--notes")
+
+    s = sub.add_parser("flag", help="Hand an asset to the user")
+    s.add_argument("asset_id")
+    s.add_argument("--reason", required=True)
+    s.add_argument("--by", required=True, choices=["user", "agent"])
+
+    s = sub.add_parser("unflag", help="User reopens (retry) or drops (waive) a flagged asset")
+    s.add_argument("asset_id")
+    s.add_argument("--by", required=True)
+    s.add_argument("--action", choices=["retry", "waive"], default="retry")
+    s.add_argument("--extra-attempts", type=int, default=1)
+    s.add_argument("--notes")
+
+    s = sub.add_parser("history", help="Event log, optionally for one asset")
+    s.add_argument("asset_id", nargs="?")
+    s.add_argument("--limit", type=int, default=200)
+
+    s = sub.add_parser("review-sheet", help="Render a contact sheet of latest attempts and mark them reviewed")
+    s.add_argument("asset_ids", nargs="*")
+    s.add_argument("--pending", action="store_true", help="All assets awaiting review")
+    s.add_argument("--gate", type=int, dest="gate_id")
+
+    s = sub.add_parser("place", help="Write approved assets into a project layout")
+    s.add_argument("asset_ids", nargs="*")
+    s.add_argument("--target", choices=["staging", "xcassets", "godot", "phaser"], default="staging")
+    s.add_argument("--project", dest="project_dir")
+    s.add_argument("--confirm-overwrite", action="store_true",
+                   help="Replace files the pipeline didn't write instead of moving them to superseded/")
+    s.add_argument("--catalog", help="xcassets: catalog path when the project has several")
+    s.add_argument("--web-root", help="phaser: folder served at '/' (default public/ if present)")
+    s.add_argument("--pack", help="phaser: pack file path (default <web-root>/artpipeline-pack.json)")
+
+    sub.add_parser("export-manifest", help="Rewrite art-manifest.json")
+    sub.add_parser("handback", help="End-of-run summary with a final contact sheet")
+    sub.add_parser("mcp", help="Run the MCP server on stdio")
+
+    # Stateless utilities (no pipeline needed); they replace the skill's scripts.
+    s = sub.add_parser("check", help="Objective checks on image files (exit 1 if any fail)")
+    s.add_argument("files", nargs="+", type=Path)
+    _class_flags(s)
+
+    s = sub.add_parser("process", help="Process one source into a class master + renditions, then check it")
+    s.add_argument("source", type=Path)
+    s.add_argument("out_dir", type=Path)
+    s.add_argument("--name", help="Output base name (default: source stem)")
+    _class_flags(s)
+    s.add_argument("--remove-bg", action="store_true")
+    s.add_argument("--trim", action="store_true")
+    s.add_argument("--clamp", choices=["hard", "soft", "off"])
+    s.add_argument("--flatten", metavar="HEX")
+    s.add_argument("--scales", help="Renditions as scale factors, e.g. 1,2,3 (suffix @Nx)")
+
+    s = sub.add_parser("contact-sheet", help="Contact sheet of image files at display sizes on backgrounds")
+    s.add_argument("out", type=Path)
+    s.add_argument("files", nargs="+", type=Path)
+    s.add_argument("--sizes", default="256,64,24")
+    s.add_argument("--bg", default="#1C1C1E,#F2F2F7")
+    s.add_argument("--labels")
+    s.add_argument("--icon-mask", action="store_true")
+    s.add_argument("--pixel", action="store_true")
+    return p
 
 
-_NEXT_COMMANDS = {
-    "pending": "artpipeline prompt {id}",
-    "prompted": "artpipeline file <downloaded-image> {id}",
-    "filed": "artpipeline review {id}",
-    "rejected": "artpipeline prompt {id} --retry",
-}
-
-_EXPECTED_EXTENSIONS = {
-    "bird_sprite": ".png",
-    "app_icon": ".png",
-    "ui_glyph": ".svg",
-}
-
-# Background-removal thresholds (per channel, 0-255).
-# Used by _process_source_image when an asset has transparent_background=True.
-# Pixels with min(R,G,B) >= _BG_OPAQUE_MAX are fully transparent.
-# Pixels in [_BG_FEATHER_MIN, _BG_OPAQUE_MAX) get a linear-ramp alpha so anti-aliased
-# silhouette edges don't show a hard halo.
-_BG_OPAQUE_MAX = 240
-_BG_FEATHER_MIN = 200
+def _class_flags(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--class", dest="klass", help="Preset class to start from (e.g. game_center_badge)")
+    s.add_argument("--size", help="Master size WxH")
+    s.add_argument("--alpha", choices=["required", "forbidden", "any"])
+    s.add_argument("--palette", help="Comma-separated hexes, or a file with one hex per line")
+    s.add_argument("--bg", dest="backgrounds", help="Comma-separated background hexes")
+    s.add_argument("--min-in-palette", type=float)
+    s.add_argument("--max-de", type=float)
+    s.add_argument("--pixel-art", action="store_true")
 
 
-def _process_source_image(source_path, dest_path,
-                          canonical_dims, remove_background):
-    """Resize source -> canonical and optionally key out near-white background.
+def _hexes(v: str | None) -> list[str]:
+    if not v:
+        return []
+    path = Path(v)
+    if path.is_file():
+        vals = [ln.split("//")[0].strip() for ln in path.read_text().splitlines()]
+        return [x.split()[0] for x in vals if x]
+    return [h.strip() for h in v.split(",") if h.strip()]
 
-    Returns True if Pillow was available and the image was processed; False if
-    Pillow is not installed (caller should fall back to plain copy).
-    """
+
+def _adhoc_class(a: argparse.Namespace, default_format: str):
+    from artpipeline.presets import PRESETS
+    from artpipeline.schema import AssetClass
+
+    base = PRESETS[a.klass].model_dump() if a.klass else {"format": default_format, "master": (1024, 1024)}
+    if a.klass and a.klass not in PRESETS:
+        raise PipelineError("INVALID_ARGUMENT", f"Unknown preset '{a.klass}'.", known=sorted(PRESETS))
+    if a.size:
+        w, _, h = a.size.lower().partition("x")
+        base["master"] = (int(w), int(h or w))
+    if a.alpha:
+        base["alpha"] = a.alpha
+    if a.min_in_palette is not None:
+        base["checks"]["palette_min_share"] = a.min_in_palette
+    if a.max_de is not None:
+        base["checks"]["palette_max_de"] = a.max_de
+    if a.pixel_art:
+        base["pixel_art"] = True
+    proc = base.setdefault("processing", {})
+    for flag, key in (("remove_bg", "remove_bg"), ("trim", "trim")):
+        if getattr(a, flag, False):
+            proc[key] = True
+    if getattr(a, "clamp", None):
+        proc["palette_clamp"] = a.clamp
+    if getattr(a, "flatten", None):
+        proc["flatten"] = a.flatten
+    if getattr(a, "scales", None):
+        base["renditions"] = [{"suffix": f"@{s.strip()}x", "scale": float(s)} for s in a.scales.split(",")]
+    return AssetClass.model_validate(base)
+
+
+def _stateless(a: argparse.Namespace) -> tuple[int, Any]:
+    from artpipeline.checks import CheckContext, imaging_checker, options_for
+    from artpipeline.imaging.analyze import analyze
+    from artpipeline.imaging.render import RenderError, load_rgba
+    from artpipeline.imaging.sheet import SheetItem, build_sheets
+
+    if a.cmd == "contact-sheet":
+        sizes = [int(x) for x in a.sizes.split(",")]
+        labels = a.labels.split(",") if a.labels else [f.stem for f in a.files]
+        items = [SheetItem(label=lab, image=load_rgba(f, (max(1024, max(sizes)),) * 2), sizes=sizes,
+                           backgrounds=_hexes(a.bg), pixel_art=a.pixel, icon_mask=a.icon_mask)
+                 for f, lab in zip(a.files, labels)]
+        pages = build_sheets(items, a.out.parent, a.out.stem)
+        return 0, {"pages": [str(p) for p in pages]}
+
+    palette, bgs = _hexes(a.palette), _hexes(a.backgrounds)
+    if a.cmd == "check":
+        results = []
+        for f in a.files:
+            cls = _adhoc_class(a, "svg" if f.suffix.lower() == ".svg" else "png")
+            try:
+                img = load_rgba(f, tuple(cls.master))
+            except RenderError as e:
+                results.append({"file": str(f), "pass": False, "fail": [str(e)], "warn": []})
+                continue
+            size = tuple(cls.master) if (a.klass or a.size) else None
+            fd = analyze(img, options_for(cls, palette, bgs or cls.review_backgrounds, size=size))
+            results.append({"file": str(f), "pass": fd.passed, "fail": fd.fail, "warn": fd.warn,
+                            "metrics": fd.metrics})
+        return (0 if all(r["pass"] for r in results) else 1), results
+
+    # process
+    if not (a.klass or a.size):
+        raise PipelineError("INVALID_ARGUMENT", "process needs --class or --size to know the master.")
+    cls = _adhoc_class(a, "png")  # sources (incl. SVG) are processed into a raster master
+    if not a.source.is_file():
+        raise PipelineError("SOURCE_NOT_FOUND", f"Source file not found: {a.source}")
+    res = imaging_checker(a.source, cls, CheckContext(palette=palette, backgrounds=bgs or cls.review_backgrounds,
+                                                      out_dir=a.out_dir, name=a.name or a.source.stem))
+    out = {"processed": str(res.processed_path) if res.processed_path else None,
+           "renditions": {k: str(v) for k, v in res.renditions.items()}, **res.to_dict()}
+    return (0 if res.passed else 1), out
+
+
+def run(argv: list[str] | None = None) -> tuple[int, Any]:
+    a = _parser().parse_args(argv)
     try:
-        from PIL import Image, UnidentifiedImageError
-    except ImportError:
-        return False
+        if a.cmd == "mcp":
+            from artpipeline.mcp_server import main as mcp_main
 
-    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-    try:
-        with Image.open(source_path) as src:
-            img = src.copy()
-    except (UnidentifiedImageError, OSError):
-        # Source is not a decodable image; let caller fall back to plain copy.
-        return False
-
-    target_size = tuple(canonical_dims)
-    if tuple(img.size) != target_size:
-        img = img.resize(target_size, resample)
-
-    if remove_background:
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        px = img.load()
-        w, h = img.size
-        opaque_max = _BG_OPAQUE_MAX
-        feather_min = _BG_FEATHER_MIN
-        feather_range = opaque_max - feather_min
-        for y in range(h):
-            for x in range(w):
-                r, g, b, a = px[x, y]
-                m = min(r, g, b)
-                if m >= opaque_max:
-                    px[x, y] = (r, g, b, 0)
-                elif m >= feather_min:
-                    new_a = int(round((opaque_max - m) * 255 / feather_range))
-                    if new_a < a:
-                        px[x, y] = (r, g, b, new_a)
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(dest_path)
-    return True
-
-
-@click.group()
-@click.option("--human", is_flag=True, help="Human-readable output (dev only)")
-@click.pass_context
-def main(ctx, human):
-    ctx.ensure_object(dict)
-    ctx.obj["human"] = human
-
-
-@main.command()
-@click.argument("brief", type=click.Path(exists=True, path_type=Path))
-@click.pass_context
-def parse(ctx, brief):
-    """Parse an art brief and create pipeline.json."""
-    try:
-        raw = parser.parse_brief(brief)
-    except ValueError as e:
-        raise click.ClickException(str(e))
-
-    pipeline_path = brief.parent / "pipeline.json"
-
-    existing = {}
-    if pipeline_path.exists():
-        try:
-            existing_manifest = manifest.load(pipeline_path)
-            existing = existing_manifest.assets
-        except (ValueError, KeyError, TypeError) as e:
-            click.echo(f"Warning: could not read existing pipeline.json ({e}), starting fresh.", err=True)
-
-    assets = {}
-    for entry in raw.get("assets", []):
-        asset_id = entry["id"]
-        if asset_id in existing:
-            assets[asset_id] = existing[asset_id]
-        else:
-            dr = entry.get("derived_resolutions")
-            if dr:
-                dr = {
-                    k: {**v, "filed_path": v.get("filed_path")}
-                    for k, v in dr.items()
-                }
-            assets[asset_id] = manifest.Asset(
-                id=asset_id,
-                status="pending",
-                type=entry["type"],
-                destination=entry["destination"],
-                dimensions=entry["dimensions"],
-                prompt=entry["prompt"],
-                acceptance_criteria=entry["acceptance_criteria"],
-                species=entry.get("species"),
-                derived_resolutions=dr,
-                mockup_only=bool(entry.get("mockup_only", False)),
-                transparent_background=bool(entry.get("transparent_background", False)),
-            )
-
-    m = manifest.Manifest(
-        brief=brief.name,
-        project=raw["project"],
-        direction=raw["direction"],
-        assets=assets,
-    )
-    manifest.save(m, pipeline_path)
-
-    output = {
-        "project": m.project,
-        "direction": m.direction,
-        "pipeline": str(pipeline_path),
-        "assets": [
-            {"id": a.id, "type": a.type, "status": a.status}
-            for a in m.assets.values()
-        ],
-    }
-    _emit(output, ctx.obj["human"])
+            mcp_main()
+            raise SystemExit(0)  # stdout belongs to the MCP transport; print nothing
+        if a.cmd in ("check", "process", "contact-sheet"):
+            return _stateless(a)
+        if a.cmd == "init":
+            _, out = Pipeline.init(a.brief, a.root)
+            return 0, out
+        store = Store.open(a.root) if a.root else Store.discover()
+        p = Pipeline(store)
+        if a.cmd == "status":
+            out = p.status(a.asset_id)
+        elif a.cmd == "claim":
+            out = p.claim(a.agent, a.n, group=a.group, asset_ids=a.asset_ids)
+        elif a.cmd == "release":
+            out = p.release(a.asset_id, a.agent)
+        elif a.cmd == "register":
+            prov = {k: getattr(a, k) for k in
+                    ("route", "tool", "model", "prompt", "seed", "references", "rights", "notes")}
+            out = p.register_attempt(a.asset_id, a.file, a.agent, prov, a.change_from_previous)
+        elif a.cmd == "decide":
+            out = p.decide(a.asset_id, a.decision, a.by, a.reason)
+        elif a.cmd == "lock-style":
+            pal = [h.strip() for h in a.palette.split(",")] if a.palette else None
+            out = p.lock_style(a.by, a.block, palette=pal, hero_ids=a.hero_ids,
+                               references=a.references, notes=a.notes, provisional=a.provisional)
+        elif a.cmd == "pass-gate":
+            out = p.pass_gate(a.gate_id, a.by, a.notes)
+        elif a.cmd == "flag":
+            out = p.flag(a.asset_id, a.reason, a.by)
+        elif a.cmd == "unflag":
+            out = p.unflag(a.asset_id, a.by, a.action, a.extra_attempts, a.notes)
+        elif a.cmd == "history":
+            out = p.history(a.asset_id, a.limit)
+        elif a.cmd == "review-sheet":
+            out = p.review_sheet(a.asset_ids, pending_review=a.pending, gate_id=a.gate_id)
+        elif a.cmd == "handback":
+            out = p.handback()
+        elif a.cmd == "place":
+            out = p.place(a.target, a.asset_ids or None, a.project_dir, a.confirm_overwrite,
+                          a.catalog, a.web_root, a.pack)
+        elif a.cmd == "export-manifest":
+            out = p.export_manifest()
+        else:  # pragma: no cover
+            raise AssertionError(a.cmd)
+        return 0, out
+    except PipelineError as e:
+        return 1, e.to_dict()
 
 
-@main.command()
-@click.option("--asset", default=None, help="Show a single asset by ID")
-@click.pass_context
-def status(ctx, asset):
-    """Show pipeline status."""
-    m, _ = _load_pipeline()
-    human = ctx.obj["human"]
-
-    if asset:
-        try:
-            a = m.get_asset(asset)
-        except KeyError as e:
-            raise click.ClickException(str(e))
-        _emit(asdict(a), human)
-        return
-
-    grouped = {}
-    for a in m.assets.values():
-        grouped.setdefault(a.status, []).append({"id": a.id, "type": a.type})
-    _emit(grouped, human)
+def main(argv: list[str] | None = None) -> None:
+    pretty = "--pretty" in (argv if argv is not None else sys.argv[1:])
+    code, out = run(argv)
+    text = json.dumps(out, indent=2 if pretty else None)
+    print(text, file=sys.stderr if code else sys.stdout)
+    sys.exit(code)
 
 
-@main.command(name="next")
-@click.option(
-    "--stage",
-    default=None,
-    type=click.Choice(["pending", "prompted", "filed", "approved", "rejected"]),
-    help="Filter to assets at a specific status",
-)
-@click.pass_context
-def next_cmd(ctx, stage):
-    """Return the next asset needing action."""
-    m, _ = _load_pipeline()
-
-    for a in m.assets.values():
-        if stage and a.status != stage:
-            continue
-        if a.status == "approved":
-            continue
-        cmd = _NEXT_COMMANDS.get(a.status, "artpipeline status --asset {id}").format(id=a.id)
-        _emit({"asset_id": a.id, "status": a.status, "next_command": cmd}, ctx.obj["human"])
-        return
-
-    _emit({"asset_id": None, "message": "All assets approved."}, ctx.obj["human"])
-
-
-@main.command()
-@click.argument("asset_id")
-@click.option("--retry", is_flag=True, help="Generate revised prompt using stored rejection reason")
-@click.pass_context
-def prompt(ctx, asset_id, retry):
-    """Get the image-gen prompt for an asset."""
-    m, pipeline_path = _load_pipeline()
-    try:
-        a = m.get_asset(asset_id)
-    except KeyError as e:
-        raise click.ClickException(str(e))
-
-    text = a.prompt
-    if retry:
-        reason = a.rejection_reason or "no reason recorded"
-        text = (
-            "REVISION REQUEST: The previous attempt was rejected because: \"" + reason + "\".\n"
-            "Please adjust accordingly.\n\n" + text
-        )
-
-    a.status = "prompted"
-    manifest.save(m, pipeline_path)
-
-    _emit({"asset_id": a.id, "prompt": text, "retry_count": a.retry_count}, ctx.obj["human"])
-
-
-@main.command(name="file")
-@click.argument("image_path", type=click.Path(path_type=Path))
-@click.argument("asset_id")
-@click.pass_context
-def file_cmd(ctx, image_path, asset_id):
-    """Copy a downloaded image to its pipeline destination."""
-    if not image_path.exists():
-        raise click.ClickException(f"Source file not found: {image_path}")
-
-    m, pipeline_path = _load_pipeline()
-    try:
-        a = m.get_asset(asset_id)
-    except KeyError as e:
-        raise click.ClickException(str(e))
-
-    if a.mockup_only:
-        if image_path.suffix.lower() != ".png":
-            raise click.ClickException(
-                f"Mockup assets require a .png file; got '{image_path.suffix}'."
-            )
-    else:
-        expected_ext = _EXPECTED_EXTENSIONS.get(a.type, ".png")
-        if image_path.suffix.lower() != expected_ext:
-            raise click.ClickException(
-                f"Wrong file extension '{image_path.suffix}' for asset type '{a.type}'. "
-                f"Expected '{expected_ext}'."
-            )
-
-    dest = pipeline_path.parent / a.destination
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    raster_processed = False
-    if not a.mockup_only and dest.suffix.lower() == ".png":
-        raster_processed = _process_source_image(
-            image_path, dest, a.dimensions, a.transparent_background
-        )
-    if not raster_processed:
-        shutil.copy2(image_path, dest)
-
-    a.filed_path = str(a.destination)
-
-    if a.derived_resolutions:
-        try:
-            from PIL import Image
-            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-            with Image.open(dest) as img:
-                for res_info in a.derived_resolutions.values():
-                    res_dest = pipeline_path.parent / res_info["destination"]
-                    res_dest.parent.mkdir(parents=True, exist_ok=True)
-                    scaled = img.resize(tuple(res_info["dimensions"]), resample)
-                    scaled.save(res_dest)
-                    res_info["filed_path"] = res_info["destination"]
-        except ImportError:
-            pass
-
-    a.status = "filed"
-    manifest.save(m, pipeline_path)
-
-    output = {"asset_id": a.id, "filed_path": a.filed_path}
-    if a.derived_resolutions:
-        derived = {k: v["filed_path"] for k, v in a.derived_resolutions.items() if v.get("filed_path")}
-        if derived:
-            output["derived_filed_paths"] = derived
-    _emit(output, ctx.obj["human"])
-
-
-@main.command()
-@click.argument("asset_id")
-@click.pass_context
-def review(ctx, asset_id):
-    """Run programmatic checks and surface acceptance criteria."""
-    m, pipeline_path = _load_pipeline()
-    try:
-        a = m.get_asset(asset_id)
-    except KeyError as e:
-        raise click.ClickException(str(e))
-
-    if a.status not in ("filed", "approved", "rejected"):
-        raise click.ClickException(
-            f"Asset '{asset_id}' has status '{a.status}' - it must be filed before review. "
-            f"Run 'artpipeline file <image> {asset_id}' first."
-        )
-
-    file_path = pipeline_path.parent / a.destination
-    effective_type = "mockup" if a.mockup_only else a.type
-    checks = review_mod.run_checks(file_path, a.dimensions, effective_type)
-
-    output = {
-        "asset_id": a.id,
-        "checks": checks,
-        "acceptance_criteria": a.acceptance_criteria,
-        "visual_review_required": True,
-    }
-    if a.mockup_only:
-        output["is_mockup"] = True
-
-    if a.derived_resolutions:
-        derived_checks = {}
-        for res_key, res_info in a.derived_resolutions.items():
-            fp = res_info.get("filed_path")
-            if fp:
-                derived_checks[res_key] = review_mod.run_checks(
-                    pipeline_path.parent / fp, res_info["dimensions"], a.type
-                )
-        if derived_checks:
-            output["derived_checks"] = derived_checks
-
-    _emit(output, ctx.obj["human"])
-
-
-@main.command()
-@click.argument("asset_id")
-@click.pass_context
-def approve(ctx, asset_id):
-    """Mark an asset as approved."""
-    m, pipeline_path = _load_pipeline()
-    try:
-        a = m.get_asset(asset_id)
-    except KeyError as e:
-        raise click.ClickException(str(e))
-    a.status = "approved"
-    manifest.save(m, pipeline_path)
-    _emit({"asset_id": a.id, "status": a.status}, ctx.obj["human"])
-
-
-@main.command()
-@click.argument("asset_id")
-@click.option("--reason", required=True, help="Why the asset was rejected (used in retry prompt)")
-@click.pass_context
-def reject(ctx, asset_id, reason):
-    """Mark an asset as rejected and store the reason for retry."""
-    m, pipeline_path = _load_pipeline()
-    try:
-        a = m.get_asset(asset_id)
-    except KeyError as e:
-        raise click.ClickException(str(e))
-    a.status = "rejected"
-    a.rejection_reason = reason
-    a.retry_count += 1
-    manifest.save(m, pipeline_path)
-    _emit({"asset_id": a.id, "status": a.status, "retry_count": a.retry_count}, ctx.obj["human"])
+if __name__ == "__main__":
+    main()

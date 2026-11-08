@@ -1,0 +1,10 @@
+{
+  "name": "artpipeline",
+  "version": "2.0.0",
+  "description": "Art director + production engine for casual mobile games: the casual-mobile-art-director skill plus an MCP server that tracks assets, checks every file, renders contact sheets and enforces style-lock and review gates.",
+  "author": { "name": "Joshua Howard" },
+  "homepage": "https://github.com/mrjoshuahoward/artpipelinetool",
+  "repository": "https://github.com/mrjoshuahoward/artpipelinetool",
+  "license": "MIT",
+  "keywords": ["game-art", "mobile", "art-direction", "asset-pipeline", "mcp"]
+}

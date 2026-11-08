@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Create or refresh the plugin's Python environment in the persistent plugin data folder.
+# Idempotent and safe to run concurrently (the SessionStart hook and the MCP launcher both call it).
+# Never writes to stdout: hook stdout becomes model context, and the launcher's stdout is MCP.
+set -uo pipefail
+
+ROOT="${CLAUDE_PLUGIN_ROOT:-${ARTPIPELINE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}}"
+DATA="${CLAUDE_PLUGIN_DATA:-${ARTPIPELINE_PLUGIN_DATA:-$HOME/.cache/artpipeline-plugin}}"
+VENV="$DATA/venv"
+STAMP="$VENV/.artpipeline-stamp"
+LOG="$DATA/bootstrap.log"
+LOCK="$DATA/.bootstrap.lock"
+QUIET=0; [[ "${1:-}" == "--quiet" ]] && QUIET=1
+say() { [[ $QUIET == 1 ]] || echo "artpipeline: $*" >&2; }
+mkdir -p "$DATA"
+
+# Rebuild when the plugin version (root path) or its source changes.
+want="$( { echo "$ROOT"; cat "$ROOT/pyproject.toml"; find "$ROOT/artpipeline" -name '*.py' -print0 | sort -z | xargs -0 cat; } | shasum | cut -d' ' -f1)"
+ready() { [[ -x "$VENV/bin/artpipeline" && -f "$STAMP" && "$(cat "$STAMP")" == "$want" ]]; }
+ready && exit 0
+
+# One installer at a time; others wait (up to 5 minutes), then re-check.
+for _ in $(seq 1 300); do
+  if mkdir "$LOCK" 2>/dev/null; then trap 'rmdir "$LOCK" 2>/dev/null' EXIT; break; fi
+  # Break a lock left by a killed installer (older than 10 minutes).
+  if [[ -n "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]]; then rmdir "$LOCK" 2>/dev/null; continue; fi
+  sleep 1
+  ready && exit 0
+done
+ready && exit 0
+
+PY=""
+for c in python3.14 python3.13 python3.12 python3.11 python3; do
+  if command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    PY="$(command -v "$c")"; break
+  fi
+done
+if [[ -z "$PY" ]]; then
+  echo "artpipeline: needs Python 3.11+ on PATH (python.org or 'brew install python')." >&2
+  exit 1
+fi
+
+say "setting up the Python environment (first run takes a minute)…"
+{
+  echo "=== $(date -u +%FT%TZ) bootstrap from $ROOT with $PY"
+  rm -rf "$VENV"
+  "$PY" -m venv "$VENV" &&
+  "$VENV/bin/python" -m pip install --quiet --upgrade pip &&
+  "$VENV/bin/python" -m pip install --quiet "$ROOT"
+} >>"$LOG" 2>&1
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "artpipeline: environment setup failed (exit $status); see $LOG" >&2
+  exit 1
+fi
+echo "$want" > "$STAMP"
+say "ready."

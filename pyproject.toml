@@ -1,17 +1,24 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "artpipeline"
-version = "0.1.0"
-description = "Art asset pipeline CLI for Claude Cowork"
-requires-python = ">=3.10"
-dependencies = ["click>=8.1", "PyYAML>=6.0"]
+version = "2.0.0"
+description = "State and operations engine for agent-driven game art production in Claude Code"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "Pillow>=11.0",
+    "PyYAML>=6.0.2",
+    "resvg-py>=0.5",
+    "mcp>=2.3,<3",
+]
 
 [project.optional-dependencies]
-review = ["Pillow>=10.0"]
-dev = ["pytest>=8.0", "click>=8.1", "Pillow>=10.0", "PyYAML>=6.0"]
+dev = ["pytest>=8.3"]
 
 [project.scripts]
 artpipeline = "artpipeline.cli:main"
@@ -21,4 +28,3 @@ include = ["artpipeline*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]

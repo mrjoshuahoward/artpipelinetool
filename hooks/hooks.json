@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/artpipeline-bootstrap",
+            "args": ["--quiet"],
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

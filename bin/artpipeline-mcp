@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# MCP launcher for the plugin: make sure the environment exists, then hand stdio to the server.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA="${CLAUDE_PLUGIN_DATA:-${ARTPIPELINE_PLUGIN_DATA:-$HOME/.cache/artpipeline-plugin}}"
+"$DIR/artpipeline-bootstrap" --quiet </dev/null >&2 || exit 1
+exec "$DATA/venv/bin/artpipeline" mcp
