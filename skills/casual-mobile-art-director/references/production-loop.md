@@ -82,9 +82,10 @@ The asset isn't done until it looks right **in the game**:
   - `xcassets`: one `<name>.imageset` per asset (`@1x/@2x/@3x` renditions become scales; otherwise single-scale) and an `AppIcon.appiconset` for a 1024 flat icon. Game Center art, store screenshots and Icon Composer layers are skipped with the reason: they don't belong in the catalog.
   - `godot`: files at `res://<destination>` plus a lossless, no-mipmap `.import` preset (an existing `.import` is never replaced). Pixel-art filtering is a project or node setting in Godot 4; the result says so.
   - `phaser`: files at `<destination>` plus `artpipeline-pack.json` in the web root (`public/` for Vite); load it with `this.load.pack("artpipeline", "artpipeline-pack.json")`. Keys are asset ids. Destinations outside the web root are written but left out of the pack, with a note.
+  - Atlases built by `derive` also get their frame data: Phaser atlas JSON plus a pack `atlas` entry, Godot `AtlasTexture`/`SpriteFrames` `.tres`, an Xcode `.spriteatlas`.
   - `staging`: nothing leaves the pipeline root; writes `ART-INSTALL.md` with an `rsync -R` copy command. Use it for read-only repos.
   - Anything already there that the pipeline didn't write moves to `superseded/` (unless `confirm_overwrite`, which needs the user's say-so). Engine targets are refused under a provisional lock. Every placed file is recorded under `approved.placed` in the manifest.
-- **Pack atlases** (TexturePacker CLI, or the engine's own packer) when the set is final.
+- **Pack atlases with a `derive` recipe** (`asset-manifest.md` → `kind: derive`) once the frames are approved: a sprite sheet (`layout: grid`, with `animation`) or a texture atlas (`layout: pack`). `place` writes the engine's atlas data. Reach for TexturePacker only for what `derive` lacks: rotation, polygon packing, multi-page atlases.
 - **Screenshot in context:**
   - Phaser: the dev server plus Playwright on the real canvas.
   - Godot: the Godot MCP or a headless run.

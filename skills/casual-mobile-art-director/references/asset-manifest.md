@@ -124,4 +124,24 @@ Every layer takes `at: [x, y]`, `size: [w, h]` (default: the whole canvas), `fit
         - {text: "{{params.caption}}", font: art-src/fonts/Title.ttf, font_size: 120, at: [660, 400], anchor: middle, valign: middle, max_width: 1100, shrink: true, color: $cream}
 ```
 
-An `asset` layer builds only once that asset is approved (otherwise `BUILD_FAILED`, no attempt used). When the layered asset is rebuilt and approved again, the compose asset becomes stale, so a palette change flows through as: `build(stale=true)` → approve the rebuilt parts → `build(stale=true)` again for the composites.
+### `kind: derive`: sprite sheets and texture atlases
+
+Packs other assets' **approved** outputs into one PNG the size of the class master. Use class `sprite_atlas` (2048×2048, alpha) with `overrides: {master: [..]}` for the texture size the engine wants.
+
+```yaml
+  - {id: coin-spin, class: sprite_atlas, subject: Coin spin, acceptance_criteria: [Loops smoothly],
+     destination: sprites/coin-spin.png, overrides: {master: [512, 128]},
+     build: {kind: derive, layout: grid, frames_group: coin, padding: 0,
+             animation: {fps: 10, sequence: [coin-0, coin-1, coin-2, coin-1]}}}
+  - {id: ui-atlas, class: sprite_atlas, subject: UI atlas, acceptance_criteria: [All icons present],
+     destination: ui/ui.png, overrides: {master: [1024, 1024]},
+     build: {kind: derive, frames: [btn-play, btn-pause, icon-star], extrude: 1}}
+```
+
+- **`frames`** (asset ids) or **`frames_group`** (every other asset in that group, in brief order). Each frame appears once. Repeat frames in `animation.sequence`.
+- **`layout: grid`**: a sprite sheet. Equal cells, frames centred, `columns` optional. **`layout: pack`** (the default): an atlas. Frames are trimmed of transparent borders (`trim: false` to keep them) and packed.
+- **`cell: [w, h]`** scales every frame to fit (vector frames need it; pixel art only by whole numbers). **`padding`** (default 2) and **`extrude`** (repeat edge pixels: 1–2 for filtered sprites) stop texture bleeding.
+- If the frames don't fit, the build says what size they need. The class can't trim, remove backgrounds or make renditions, because those would move the frames.
+- `place` writes the frame table for the engine: Phaser atlas JSON and an `atlas` pack entry; Godot `AtlasTexture` per frame plus `SpriteFrames` for animations; an Xcode `.spriteatlas`. Staging writes `<name>.json` beside the sheet.
+
+An `asset` layer builds only once that asset is approved (otherwise `BUILD_FAILED`, no attempt used). The same goes for derive frames. When the layered asset or frame is rebuilt and approved again, the compose or derive asset becomes stale, so a palette change flows through as: `build(stale=true)` → approve the rebuilt parts → `build(stale=true)` again for the composites.

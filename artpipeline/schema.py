@@ -142,18 +142,34 @@ class Layer(_Strict):
         return next(k for k in ("svg", "image", "asset", "text", "fill") if getattr(self, k) is not None)
 
 
+class Animation(_Strict):
+    fps: float = Field(default=12, gt=0)
+    loop: bool = True
+    sequence: list[str] = Field(default_factory=list)  # play order; may repeat frames (default: frames)
+
+
 class BuildSpec(_Strict):
     """How artpipeline builds an asset itself (2.1). Paths are relative to the pipeline root.
     kind 'svg': an SVG source and/or a shared template with <ap:slot/>, filled with params and the
     style's named colour tokens. kind 'compose': a stack of layers (SVG recipes, images, other
-    approved assets, text, fills) on a canvas the size of the master."""
+    approved assets, text, fills) on a canvas the size of the master. kind 'derive': other approved
+    assets packed into one sprite sheet or texture atlas the size of the master."""
 
-    kind: Literal["svg", "compose"] = "svg"
+    kind: Literal["svg", "compose", "derive"] = "svg"
     source: str | None = None
     template: str | None = None
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
     background: str | None = Field(default=None, pattern=COLOR_REF)   # compose
     layers: list[Layer] = Field(default_factory=list)                  # compose
+    frames: list[str] = Field(default_factory=list)                    # derive: asset ids, in order
+    frames_group: str | None = None                                    # derive: every asset in a group
+    layout: Literal["grid", "pack"] = "pack"                            # derive
+    cell: tuple[int, int] | None = None        # derive: draw/scale each frame to fit this box
+    columns: int | None = Field(default=None, ge=1)                     # derive grid
+    padding: int = Field(default=2, ge=0)                                # derive: px between frames
+    extrude: int = Field(default=0, ge=0, le=8)                          # derive: repeat edge pixels
+    trim: bool | None = None                    # derive: crop transparent borders (default: pack only)
+    animation: Animation | None = None                                   # derive: frames play in order
 
     @field_validator("source", "template")
     @classmethod
@@ -165,16 +181,25 @@ class BuildSpec(_Strict):
         if base is None:
             return self
         set_ = self.model_fields_set
-        pick = {k: getattr(self if k in set_ else base, k) for k in ("kind", "source", "template", "background")}
-        return BuildSpec(**pick, params={**base.params, **self.params},
-                         layers=self.layers if "layers" in set_ else base.layers)
+        pick = {k: getattr(self if k in set_ else base, k) for k in type(self).model_fields if k != "params"}
+        return BuildSpec(**pick, params={**base.params, **self.params})
 
     def problem(self) -> str | None:
+        derive_set = bool(self.frames or self.frames_group or self.animation or self.cell or self.columns)
+        if self.kind != "derive" and derive_set:
+            return "frames, frames_group, cell, columns and animation belong to kind 'derive'"
         if self.kind == "svg":
             if self.layers or self.background:
                 return "layers and background belong to kind 'compose'"
             if not (self.source or self.template):
                 return "build needs a source, a template, or both"
+        elif self.kind == "derive":
+            if self.source or self.template or self.layers or self.background:
+                return "kind 'derive' packs frames; it takes no source, template, layers or background"
+            if bool(self.frames) == bool(self.frames_group):
+                return "kind 'derive' needs frames (asset ids) or frames_group, not both"
+            if self.columns and self.layout != "grid":
+                return "columns applies to layout: grid"
         else:
             if self.source or self.template:
                 return "kind 'compose' uses layers, not source/template"
@@ -301,18 +326,30 @@ class BriefManifest(_Strict):
                 a.build = a.build.merged_over(group.build) if a.build else group.build.model_copy(deep=True)
             if a.build is not None and (why := a.build.problem()):
                 raise ValueError(f"asset '{a.id}': {why}")
-        uses = {a.id: [ly.asset for ly in a.build.layers if ly.asset] for a in self.assets if a.build}
+        for a in self.assets:  # derive: a group of frames becomes its asset ids, in brief order
+            b = a.build
+            if b is not None and b.kind == "derive" and b.frames_group:
+                b.frames = [x.id for x in self.assets if x.group == b.frames_group and x.id != a.id]
+                if not b.frames:
+                    raise ValueError(f"asset '{a.id}': frames_group '{b.frames_group}' has no other assets")
+            if b is not None and len(set(b.frames)) != len(b.frames):
+                raise ValueError(f"asset '{a.id}': a frame is listed twice (an atlas holds each frame once; "
+                                 "repeat frames in animation.sequence)")
+            if b is not None and b.animation and (extra := sorted(set(b.animation.sequence) - set(b.frames))):
+                raise ValueError(f"asset '{a.id}': animation.sequence names {extra}, which are not frames")
+        uses = {a.id: [ly.asset for ly in a.build.layers if ly.asset] + list(a.build.frames)
+                for a in self.assets if a.build}
         for aid, deps in uses.items():
             for d in deps:
                 if d not in seen:
-                    raise ValueError(f"asset '{aid}': layer asset '{d}' is not in the brief")
+                    raise ValueError(f"asset '{aid}': layer or frame asset '{d}' is not in the brief")
         for aid in uses:  # a compose asset can't (indirectly) contain itself
             stack, path = [aid], set()
             while stack:
                 cur = stack.pop()
                 for d in uses.get(cur, []):
                     if d == aid:
-                        raise ValueError(f"asset '{aid}' contains itself through its layers")
+                        raise ValueError(f"asset '{aid}' contains itself through its layers or frames")
                     if d not in path:
                         path.add(d)
                         stack.append(d)

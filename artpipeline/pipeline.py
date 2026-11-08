@@ -734,8 +734,13 @@ class Pipeline:
         klass = loads(r["cls"])
         asset = {k: spec.get(k) for k in ("id", "subject", "group", "destination")}
         try:
+            if recipe.get("kind") == "derive":
+                k = AssetClass.model_validate(klass)
+                if k.is_vector or k.processing.trim or k.processing.remove_bg or k.renditions:
+                    raise BuildError("an atlas must be a raster class without trim, remove_bg or renditions "
+                                     "(they would move the frames); use class sprite_atlas or override them")
             return compile_recipe(self.root, recipe, tokens=tokens, asset=asset, master=tuple(klass["master"]),
-                                  assets=self._approved_file)
+                                  assets=self._approved_file, pixel_art=bool(klass.get("pixel_art")))
         except BuildError as e:
             raise PipelineError(E.BUILD_FAILED, f"'{r['id']}': {e}",
                                 hint="Fix the recipe and build again; no attempt was used.") from None
@@ -758,7 +763,9 @@ class Pipeline:
     def _built_file(self, asset_id: str, compiled) -> Path:
         d = self.store.state_dir / "build" / asset_id
         d.mkdir(parents=True, exist_ok=True)
-        f = d / "built.svg"
+        for stale in d.glob("built.*"):
+            stale.unlink()
+        f = d / f"built{compiled.ext}"
         f.write_bytes(compiled.svg)
         return f
 
@@ -1380,6 +1387,7 @@ class Pipeline:
             asset_id=r["id"], class_name=spec["class"], klass=AssetClass.model_validate(loads(r["cls"])),
             destination=spec["destination"], master=self.root / (att["processed_path"] or att["source_path"]),
             renditions={k: self.root / v for k, v in (loads(att["renditions"]) or {}).items()},
+            atlas=(loads(att["build"]) or {}).get("atlas") if att["build"] else None,
         )
 
     def _stage(self, c, r, att, now: str) -> dict[str, Any] | None:
@@ -1389,10 +1397,16 @@ class Pipeline:
             return None
         written, superseded = [], []
         stamp = _stamp(now)
-        for src, dest in place_mod.file_pairs(self._item(r, att), self.root):
+        item = self._item(r, att)
+        for src, dest in place_mod.file_pairs(item, self.root):
             if not src.is_file():
                 continue
             key, moved = self._put(c, dest, src=src, asset_id=r["id"], n=att["n"], now=now, stamp=stamp)
+            written.append(key)
+            if moved:
+                superseded.append(moved)
+        for dest, data in place_mod.atlas_data(item, self.root):
+            key, moved = self._put(c, dest, data=data, asset_id=r["id"], n=att["n"], now=now, stamp=stamp)
             written.append(key)
             if moved:
                 superseded.append(moved)
@@ -1484,6 +1498,8 @@ class Pipeline:
                     approved["build"] = {"kind": b["kind"], "inputs": sorted(b["inputs"]),
                                          "params": b.get("params", {}), "tokens": b.get("tokens", {}),
                                          "fingerprint": b["fingerprint"]}
+                    if b.get("atlas"):
+                        approved["build"]["atlas"] = b["atlas"]
                 if (r["id"], att["n"]) in placed:
                     approved["placed"] = placed[(r["id"], att["n"])]
             assets.append({

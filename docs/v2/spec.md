@@ -169,9 +169,16 @@ The **CLI** mirrors the tools one to one (`artpipeline claim --n 4 --agent sub-2
 | `staging` (default; required for read-only repos) | `<root>/<destination>` (written on approval), plus `ART-INSTALL.md` with an `rsync -R` copy command |
 | `xcassets` | `<name>.imageset/` (scales from `@Nx` renditions, else single-scale) and `AppIcon.appiconset/` (single 1024 universal) with `Contents.json`. Game Center art, store screenshots and Icon Composer layers are skipped with a reason: they are uploaded to App Store Connect or built in Icon Composer |
 | `godot` | Files at `res://<destination>`, plus a lossless, no-mipmap `.import` preset where none exists. Godot 4 sets pixel-art filtering per project or node, not on import; the result says so |
-| `phaser` | Individual files plus a Loader pack file (`<web_root>/artpipeline-pack.json`, section `artpipeline`, keys are asset ids). Atlas packing through the TexturePacker CLI is not done yet |
+| `phaser` | Individual files plus a Loader pack file (`<web_root>/artpipeline-pack.json`, section `artpipeline`, keys are asset ids) |
+
+**Atlases (2.1 B3).** An asset built by `derive` carries its frame table, and every target writes it in the engine's form:
+- `staging`/`phaser`: `<name>.json` beside the sheet. This is the TexturePacker-style JSON hash that Phaser's `load.atlas` reads; `meta.animation` holds fps, loop and the play sequence. The Phaser pack entry is `{type: "atlas", textureURL, atlasURL}`.
+- `godot`: an `AtlasTexture` `.tres` per frame in `<name>_frames/`, with `margin` for trimmed frames and `filter_clip`, plus `<name>.sprite_frames.tres` (`SpriteFrames`, animation `default`) when the atlas is an animation.
+- `xcassets`: `<name>.spriteatlas/` with one imageset per frame, cut from the sheet and restored to its untrimmed size. Xcode packs it at build time.
 
 Before any write, existing files are moved to `superseded/` with a timestamp, unless `confirm_overwrite` is set. Every placed file is recorded in the manifest. A file the pipeline wrote itself (tracked by hash) is replaced in place, so placing again is idempotent; an imageset folder is the pipeline's entirely, so stray files in it are moved aside too. Engine targets are refused while the style lock is provisional.
+
+Verified (2026-11-08, B3): the Godot output loads in Godot 4.7 headless. The `SpriteFrames` resource plays 4 frames at 10 fps, looping, with a repeated frame. Region and trim margin come back right, and a trimmed frame reports its original 128×128 size. A catalog with two `.spriteatlas` folders compiles with `actool` with no warnings into packed images. Phaser atlas loading has not been run in a browser yet.
 
 Verified (2026-11-05): an app icon and two `ui_icon_svg` assets placed into a scratch copy of Sorting Line's `Assets.xcassets` compile with `actool` with no warnings, and a minimal SwiftUI app on the iOS 27 simulator shows the icon on the home screen and loads both imagesets at @3x.
 
@@ -262,7 +269,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 14. Building assets (2.1)
 
-Status: **B1 done (2026-11-07), B2 done (2026-11-08)** · branch `v2.1`
+Status: **B1 done (2026-11-07), B2 and B3 done (2026-11-08)** · branch `v2.1`
 
 ### Why
 
@@ -287,7 +294,7 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
 |---|---|---|
 | `svg` | **B1** ✅ | `source` and/or `template`. Substitutes `{{tokens.x}}`, `{{params.x}}` and `{{asset.id}}`; a param value `$x` names a token. Fills `<ap:slot>`/`<ap:part>`, inlines `<ap:include>`, embeds local `<image>` files, and expands the shape library (`ap:star`, `polygon`, `ring`, `arc`, `gear`, `burst`) to plain SVG. Rendered by the bundled resvg. |
 | `compose` | **B2** ✅ | A layer stack on a canvas the size of the master: `svg` (a recipe file), `image` (local raster/SVG), `asset` (another asset's approved output), `text`, `fill`. Per-layer box, fit, rounded clip, opacity, rotation and drop shadow. Compiles to one SVG, so raster classes render through the same resvg pass. For store screenshots, key art and layered icons. |
-| `derive` | B3 | Built from approved assets: sprite sheets and texture atlases (Phaser atlas JSON, Godot `AtlasTexture`, `.spriteatlas`), plus `place` support. |
+| `derive` | **B3** ✅ | Packs other assets' approved outputs (`frames`, or `frames_group`) into one PNG the size of the class master (preset `sprite_atlas`, 2048²). `layout: grid` gives a sprite sheet: frames centred in equal cells, with `columns`. `layout: pack` gives an atlas: frames trimmed of transparent borders, then shelf-packed tallest first. Also `cell` (scale every frame to fit; vectors need it; pixel art scales only by whole numbers), `padding`, `extrude` (repeat edge pixels) and `animation: {fps, loop, sequence}`, where the sequence may repeat frames. The frame table is part of the build record and the manifest, and `place` writes it per engine (§7). The fingerprint hashes the pixels plus the table, not the PNG encoding. The class must be raster with no trim, remove_bg or renditions, because those would move the frames. |
 | `script` | B4 | An agent-written script with declared inputs and outputs, hashed. The fallback for anything the other kinds can't express. |
 
 ### Text (B2)
@@ -312,11 +319,11 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
   - Stale rebuilds are described automatically ("rebuilt: tokens gold #F2C14E→#F5C451").
 - **Stale tracking.** `status()` reports `recipes.stale` (plus compile errors), and `status(asset_id)` reports `stale`. `lock_style` returns the assets its change made stale. An unused token never makes an asset stale.
 - **`dry_run`** compiles and checks with the asset's real processing and returns a strip. It changes no state and works on any asset, including non-heroes before the lock.
-- **Compose dependencies.** An `asset` layer embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
+- **Dependencies (compose `asset` layers, derive `frames`).** An `asset` layer or frame embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
 - **Failures:** a recipe that doesn't compile is `BUILD_FAILED`, and no attempt is used. An asset without a recipe is `NO_RECIPE`.
 - **Schema v4:** adds `attempts.build` and `style_locks.tokens`, migrated in place from v3.
 
 ### Validation plan
 
-- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), plus text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored).
+- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored), and derive plus atlas placement (`tests/test_derive.py`).
 - After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.

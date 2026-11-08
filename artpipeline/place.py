@@ -6,9 +6,17 @@ Targets (spec §7):
   xcassets  <name>.imageset / AppIcon.appiconset with Contents.json in the project's asset catalog
   godot     <project>/<destination> plus a .import preset per file (never replaces an existing one)
   phaser    <project>/<destination> plus a Loader pack file listing every placed image
+
+Atlases built by `derive` (2.1 B3) carry a frame table, placed as engine data:
+  staging   <name>.json beside the sheet (TexturePacker-style JSON hash; Phaser reads it as is)
+  phaser    the same JSON, and an `atlas` pack entry instead of an `image`
+  godot     one AtlasTexture .tres per frame in <name>_frames/, plus <name>.sprite_frames.tres
+            (SpriteFrames) when the atlas is an animation
+  xcassets  <name>.spriteatlas with one imageset per frame (Xcode packs the atlas at build time)
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -50,6 +58,7 @@ class Item:
     destination: str             # from the brief, relative
     master: Path                 # absolute
     renditions: dict[str, Path]  # suffix -> absolute path
+    atlas: dict[str, Any] | None = None  # derive: frame table from the build record
 
 
 @dataclass
@@ -84,6 +93,90 @@ def file_pairs(item: Item, base: Path) -> list[tuple[Path, Path]]:
     return [(item.master, d)] + [(p, d.parent / p.name) for p in item.renditions.values()]
 
 
+# ---------------------------------------------------------------- atlases
+
+def atlas_json(item: Item, image_name: str) -> bytes:
+    """TexturePacker-style JSON hash, which Phaser's load.atlas reads directly."""
+    a = item.atlas or {}
+    frames = {}
+    for name in a.get("order", list(a.get("frames", {}))):
+        f = a["frames"][name]
+        trimmed = (f["w"], f["h"]) != (f["source_w"], f["source_h"])
+        frames[name] = {
+            "frame": {"x": f["x"], "y": f["y"], "w": f["w"], "h": f["h"]},
+            "rotated": False, "trimmed": trimmed,
+            "spriteSourceSize": {"x": f["trim_x"], "y": f["trim_y"], "w": f["w"], "h": f["h"]},
+            "sourceSize": {"w": f["source_w"], "h": f["source_h"]},
+        }
+    w, h = a.get("size", item.klass.master)
+    meta: dict[str, Any] = {"app": "artpipeline", "image": image_name, "format": "RGBA8888",
+                            "size": {"w": w, "h": h}, "scale": "1"}
+    doc: dict[str, Any] = {"frames": frames, "meta": meta}
+    if a.get("animation"):
+        anim = a["animation"]
+        meta["animation"] = {"frames": anim.get("sequence") or list(frames), "fps": anim["fps"], "loop": anim["loop"]}
+    return (json.dumps(doc, indent=2) + "\n").encode()
+
+
+def atlas_data(item: Item, base: Path) -> list[tuple[Path, bytes]]:
+    """Extra files that travel with a placed atlas sheet (the JSON frame table)."""
+    if not item.atlas:
+        return []
+    d = main_dest(item, base)
+    return [(d.with_suffix(".json"), atlas_json(item, d.name))]
+
+
+def frame_image(item: Item, name: str) -> bytes:
+    """One frame cut from the sheet, restored to its untrimmed size (for Xcode sprite atlases)."""
+    from PIL import Image
+
+    f = item.atlas["frames"][name]
+    with Image.open(item.master) as sheet:
+        crop = sheet.convert("RGBA").crop((f["x"], f["y"], f["x"] + f["w"], f["y"] + f["h"]))
+    out = Image.new("RGBA", (f["source_w"], f["source_h"]), (0, 0, 0, 0))
+    out.paste(crop, (f["trim_x"], f["trim_y"]))
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _godot_frames(item: Item, project: Path, plan: "Plan") -> None:
+    a = item.atlas
+    d = main_dest(item, project)
+    res = "res://" + d.relative_to(project).as_posix()
+    folder = d.parent / f"{d.stem}_frames"
+    names = a.get("order", list(a["frames"]))
+
+    def region(f: dict[str, int]) -> str:
+        out = f"region = Rect2({f['x']}, {f['y']}, {f['w']}, {f['h']})\n"
+        if (f["w"], f["h"]) != (f["source_w"], f["source_h"]):
+            out += (f"margin = Rect2({f['trim_x']}, {f['trim_y']}, {f['source_w'] - f['w']}, "
+                    f"{f['source_h'] - f['h']})\n")
+        return out + "filter_clip = true\n"
+
+    for n in names:
+        body = (f'[gd_resource type="AtlasTexture" load_steps=2 format=3]\n\n'
+                f'[ext_resource type="Texture2D" path="{res}" id="1_sheet"]\n\n'
+                f'[resource]\natlas = ExtResource("1_sheet")\n{region(a["frames"][n])}')
+        plan.add(folder / f"{n}.tres", item, data=body.encode())
+    plan.info.setdefault("godot_frames", {})[item.asset_id] = "res://" + folder.relative_to(project).as_posix()
+    if a.get("animation"):
+        anim = a["animation"]
+        subs = "".join(f'[sub_resource type="AtlasTexture" id="f{i}"]\natlas = ExtResource("1_sheet")\n'
+                       f'{region(a["frames"][n])}\n' for i, n in enumerate(names))
+        idx = {n: i for i, n in enumerate(names)}
+        frames = ", ".join(f'{{"duration": 1.0, "texture": SubResource("f{idx[n]}")}}'
+                           for n in anim.get("sequence") or names)
+        body = (f'[gd_resource type="SpriteFrames" load_steps={len(names) + 2} format=3]\n\n'
+                f'[ext_resource type="Texture2D" path="{res}" id="1_sheet"]\n\n{subs}'
+                f'[resource]\nanimations = [{{\n"frames": [{frames}],\n'
+                f'"loop": {"true" if anim["loop"] else "false"},\n"name": &"default",\n'
+                f'"speed": {float(anim["fps"])}\n}}]\n')
+        dest = d.parent / f"{d.stem}.sprite_frames.tres"
+        plan.add(dest, item, data=body.encode())
+        plan.info.setdefault("sprite_frames", {})[item.asset_id] = "res://" + dest.relative_to(project).as_posix()
+
+
 def build(target: str, items: list[Item], root: Path, project: Path, *, catalog: str | None = None,
           web_root: str | None = None, pack: str | None = None, stamp: str = "") -> Plan:
     if target == "staging":
@@ -105,6 +198,9 @@ def _staging(items: list[Item], root: Path, project: Path, stamp: str) -> Plan:
     for it in items:
         for src, dest in file_pairs(it, root):
             plan.add(dest, it, src=src)
+            rels.append((it.asset_id, dest.relative_to(root).as_posix()))
+        for dest, data in atlas_data(it, root):
+            plan.add(dest, it, data=data)
             rels.append((it.asset_id, dest.relative_to(root).as_posix()))
     target = str(project) if project != root else "<your project>"
     lines = [
@@ -182,6 +278,22 @@ def _xcassets(items: list[Item], project: Path, catalog: str | None) -> Plan:
         if it.class_name in NOT_IN_CATALOG:
             plan.skipped.append({"asset_id": it.asset_id, "reason": NOT_IN_CATALOG[it.class_name]})
             continue
+        if it.atlas:
+            name = _set_name(it)
+            folder = cat / f"{name}.spriteatlas"
+            for n in it.atlas.get("order", list(it.atlas["frames"])):
+                fs = folder / f"{n}.imageset"
+                plan.add(fs / f"{n}.png", it, data=frame_image(it, n))
+                doc_ = {"images": [{"filename": f"{n}.png", "idiom": "universal"}], "info": _XC_INFO}
+                plan.add(fs / "Contents.json", it, data=(json.dumps(doc_, indent=2) + "\n").encode())
+                plan.owned_dirs.append(fs)
+            plan.add(folder / "Contents.json", it, data=(json.dumps({"info": _XC_INFO}, indent=2) + "\n").encode())
+            plan.owned_dirs.append(folder)
+            if name in names:
+                raise PlacementError(f"'{names[name]}' and '{it.asset_id}' both map to the catalog entry '{name}'.",
+                                     hint="Give them different destination file names in the brief.")
+            names[name] = it.asset_id
+            continue
         if it in icons:
             name = "AppIcon" if len(icons) == 1 else _set_name(it)
             folder = cat / f"{name}.appiconset"
@@ -246,6 +358,8 @@ def _godot(items: list[Item], project: Path) -> Plan:
             plan.add(dest, it, src=src)
             plan.add(dest.with_name(dest.name + ".import"), it, data=_godot_import(it.klass),
                      keep_if_exists=True)
+        if it.atlas:
+            _godot_frames(it, project, plan)
     plan.info["res_paths"] = {it.asset_id: "res://" + main_dest(it, project).relative_to(project).as_posix()
                               for it in items}
     if any(it.klass.pixel_art for it in items):
@@ -274,6 +388,12 @@ def _phaser(items: list[Item], project: Path, web_root: str | None, pack: str | 
                                   f"game can't load it by URL; it is not in the pack.")
                 continue
             key = it.asset_id if i == 0 else it.asset_id + src.stem.removeprefix(main_dest(it, project).stem)
+            if i == 0 and it.atlas:
+                (jdest, jdata), = atlas_data(it, project)
+                plan.add(jdest, it, data=jdata)
+                entries[key] = {"type": "atlas", "key": key, "textureURL": url,
+                                "atlasURL": jdest.resolve().relative_to(wr).as_posix()}
+                continue
             entries[key] = {"type": "svg" if dest.suffix.lower() == ".svg" else "image", "key": key, "url": url}
     doc: dict[str, Any] = {}
     if pack_path.is_file():

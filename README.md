@@ -15,7 +15,7 @@ A Claude Code plugin that lets an agent produce a full set of casual-mobile game
   - A generated `art-manifest.json`.
 
 artpipeline doesn't call AI image generators. It produces assets in two ways:
-- **It builds them itself from recipes (2.1).** These are SVG templates and per-asset sources committed with your project, coloured from named style tokens and drawn with a small shape library (`<ap:star>`, `<ap:gear>` and so on). Builds are deterministic, so after a palette or frame change, `build(stale=true)` rebuilds exactly the affected assets. Text is drawn from a committed font as outlines (`<ap:text>`), and `compose` recipes stack backgrounds, screenshots, other approved assets and captions into store screenshots and key art.
+- **It builds them itself from recipes (2.1).** These are SVG templates and per-asset sources committed with your project, coloured from named style tokens and drawn with a small shape library (`<ap:star>`, `<ap:gear>` and so on). Builds are deterministic, so after a palette or frame change, `build(stale=true)` rebuilds exactly the affected assets. Text is drawn from a committed font as outlines (`<ap:text>`), and `compose` recipes stack backgrounds, screenshots, other approved assets and captions into store screenshots and key art. `derive` recipes pack approved frames into sprite sheets and texture atlases, and `place` writes Phaser atlas JSON, Godot `AtlasTexture`/`SpriteFrames` or an Xcode `.spriteatlas`.
 - **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender.
 
 Either way, artpipeline records, processes, checks and gates the result.

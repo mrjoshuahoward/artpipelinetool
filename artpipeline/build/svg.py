@@ -55,7 +55,7 @@ class BuildError(Exception):
 
 @dataclass
 class Compiled:
-    svg: bytes
+    svg: bytes                      # the built file's bytes (SVG, or PNG for derive)
     fingerprint: str
     inputs: dict[str, str]          # file → sha256 (relative to the pipeline root when inside it)
     tokens: dict[str, str]          # tokens the recipe actually used
@@ -63,12 +63,16 @@ class Compiled:
     kind: str = "svg"
     builder: str = BUILDER_VERSION
     layers: str | None = None       # compose: sha256 of the layer stack as written in the brief
+    ext: str = ".svg"               # the built file's type (derive builds a .png)
+    atlas: dict[str, Any] | None = None   # derive: frame rectangles, cell, animation
 
     def record(self) -> dict[str, Any]:
         out = {"kind": self.kind, "builder": self.builder, "fingerprint": self.fingerprint,
                "inputs": self.inputs, "tokens": self.tokens, "params": self.params}
         if self.layers:
             out["layers"] = self.layers
+        if self.atlas:
+            out["atlas"] = self.atlas
         return out
 
 
