@@ -45,6 +45,11 @@ INSTRUCTIONS = """artpipeline tracks and enforces a game-art production run. Typ
    there is moved to superseded/, never overwritten); art-manifest.json points at those copies.
 For sets larger than a handful, use register_attempts and decide_batch (one call per batch, one
 grid view of everything that passed) and check_image(asset_id=...) to pre-check drafts for free.
+Assets with a `build:` recipe in the brief are built by artpipeline itself: write or edit the recipe
+files (SVG with {{tokens.name}} colours, <ap:slot/> templates, <ap:star>/<ap:gear>/... shapes), then
+build(asset_ids | group) — it claims, compiles, registers and checks in one call (dry_run=true to
+iterate for free). After a recipe, template or token change, build(stale=true) rebuilds every
+affected asset for review. Don't write throwaway generator scripts for recipe assets.
 4. place(target=...) writes approved art into the game project (xcassets, godot, phaser) only when
    the user asks for it; a read-only or unknown project gets target="staging" (ART-INSTALL.md).
 5. handback() at the end. by="user" means the user said so in this conversation; never set it on
@@ -307,6 +312,48 @@ def register_attempts(
 
 
 @server.tool(annotations=RW)
+def build(
+    agent: Agent,
+    asset_ids: Annotated[list[str] | None, Field(description="Assets to build (each needs a build: recipe)")] = None,
+    group: Annotated[str | None, Field(description="Build every buildable asset in this group")] = None,
+    stale: Annotated[bool, Field(description="Only assets whose recipe output changed since their last "
+                                 "build (edited source/template/include, params, or token colours)")] = False,
+    change_from_previous: Annotated[str | None, Field(
+        description="Required when rebuilding after a rejection or failed checks: what you changed and why. "
+        "The recipe diff is appended automatically")] = None,
+    changes: Annotated[dict[str, str] | None, Field(
+        description="Per-asset change_from_previous, keyed by asset id (overrides the shared one)")] = None,
+    rights: str | None = None,
+    notes: str | None = None,
+    dry_run: Annotated[bool, Field(description="Compile and check without using an attempt or changing "
+                                   "state; returns a strip per asset (not a review)")] = False,
+    preview: Annotated[bool, Field(description="Show the passing ones inline (counts as review)")] = True,
+    layout: Layout = "auto",
+) -> CallToolResult:
+    """Build assets from their recipes: artpipeline compiles each recipe to SVG (named colours from the
+    style lock), claims or reopens the asset, registers the result as an attempt with the recipe as
+    provenance, processes and checks it. Recipes are committed files, so the set can be rebuilt any
+    time; a rebuild that would produce the same file is refused."""
+    def go():
+        p = _pipeline()
+        out = p.build(agent, asset_ids, group=group, stale=stale, change_from_previous=change_from_previous,
+                      changes=changes, rights=rights, notes=notes, dry_run=dry_run)
+        imgs, notes_ = [], []
+        if dry_run:
+            imgs = [Path(r["strip"]) for r in out["results"] if r.get("strip")]
+            if len(imgs) > MAX_INLINE_IMAGES:
+                notes_.append(f"Showing {MAX_INLINE_IMAGES} of {len(imgs)} dry-run strips inline.")
+        elif preview and out.get("passing"):
+            sheet = p.review_sheet(out["passing"], actor=agent)
+            out["sheet_id"], out["pages"] = sheet["sheet_id"], sheet["pages"]
+            imgs, notes_ = _review_images(sheet, layout)
+            out["next"] = ("Judge the passing assets on the inline view, then decide_batch. For failures, fix "
+                           "the recipe and build again with change_from_previous.")
+        return _result(out, imgs, notes_)
+    return _call(go)
+
+
+@server.tool(annotations=RW)
 def decide(asset_id: str, decision: Literal["approve", "reject"], by: By,
            reason: Annotated[str | None, Field(description="Required to reject: what specifically failed")] = None,
            ) -> CallToolResult:
@@ -335,6 +382,9 @@ def lock_style(by: Annotated[Literal["user", "agent"], Field(
                    "'agent' is allowed only with provisional=true.")],
                style_block: Annotated[str | None, Field(description="Default: the brief's style block")] = None,
                palette: list[str] | None = None,
+               tokens: Annotated[dict[str, str] | None, Field(
+                   description="Named colours for recipes, e.g. {'gold': '#F2C14E'}. Default: the previous "
+                   "lock's, else the brief's. Without palette, the palette is these colours")] = None,
                hero_ids: list[str] | None = None,
                references: list[str] | None = None,
                notes: str | None = None,
@@ -347,7 +397,7 @@ def lock_style(by: Annotated[Literal["user", "agent"], Field(
     packet carries this lock. Re-locking sends assets approved under the old lock back to review."""
     return _call(lambda: _result(_pipeline().lock_style(
         by, style_block, palette=palette, hero_ids=hero_ids, references=references, notes=notes,
-        provisional=provisional)))
+        provisional=provisional, tokens=tokens)))
 
 
 @server.tool(annotations=RW)

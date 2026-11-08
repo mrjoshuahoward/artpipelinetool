@@ -14,7 +14,11 @@ A Claude Code plugin that lets an agent produce a full set of casual-mobile game
   - Contact sheets shown to the model at true display sizes.
   - A generated `art-manifest.json`.
 
-artpipeline never generates images itself. The agent produces each file with whatever fits: SVG it writes, connected generators, VectorCraft/PhotoCraft, Canva, Blender. artpipeline records, processes, checks and gates the result.
+artpipeline doesn't call AI image generators. It produces assets in two ways:
+- **It builds them itself from recipes (2.1).** These are SVG templates and per-asset sources committed with your project, coloured from named style tokens and drawn with a small shape library (`<ap:star>`, `<ap:gear>` and so on). Builds are deterministic, so after a palette or frame change, `build(stale=true)` rebuilds exactly the affected assets.
+- **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender.
+
+Either way, artpipeline records, processes, checks and gates the result.
 
 ## Install
 
@@ -46,7 +50,7 @@ If you previously uploaded `casual-mobile-art-director` to claude.ai, remove tha
 
 ## CLI
 
-Everything is also available as `artpipeline <command>` with JSON output: `init`, `status`, `claim`, `register`, `review-sheet`, `decide`, `lock-style`, `pass-gate`, `flag`, `unflag`, `history`, `place`, `handback`, `export-manifest`.
+Everything is also available as `artpipeline <command>` with JSON output: `init`, `status`, `claim`, `build`, `register`, `review-sheet`, `decide`, `lock-style`, `pass-gate`, `flag`, `unflag`, `history`, `place`, `handback`, `export-manifest`.
 
 There are also stateless `check`, `process` and `contact-sheet` commands for one-off files.
 

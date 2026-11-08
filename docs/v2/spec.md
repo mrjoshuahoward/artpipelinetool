@@ -18,7 +18,7 @@ v1 pursued the same goal, but its design assumed the agent drove an image genera
 | Owner | Responsibility |
 |---|---|
 | **`casual-mobile-art-director` skill** | Judgment: direction, style, routing an asset class to a tool, prompt writing, taste review, talking to the user. |
-| **artpipeline v2 (this tool)** | Enforcement and memory: what exists, what state each asset is in, what was tried, what passed, what the user signed off, and where files go. Anything deterministic and repeatable. |
+| **artpipeline v2 (this tool)** | Enforcement and memory: what exists, what state each asset is in, what was tried, what passed, what the user signed off, and where files go. Anything deterministic and repeatable. **From 2.1 it also builds assets from committed local recipes (§14).** |
 | **Connected tools** (image-gen MCPs, Recraft, VectorCraft, Canva, Blender, Claude-written SVG) | Producing pixels and vectors. **v2 never calls a generator itself.** |
 
 ### Non-goals (v2.0)
@@ -155,6 +155,7 @@ All tools return structured output (an output schema). Review tools also return 
 | `place(asset_ids \| approved, target, confirm_overwrite=false)` | Write files into the engine layout (see §7). Returns the files written and anything superseded. |
 | `register_attempts(attempts[], agent, route, tool, …)` / `decide_batch(decisions[], by)` | Batch forms for large sets: one call per batch, one grid view of everything that passed. Refusals are reported per asset. |
 | `check_image(files, asset_id)` | Free pre-check: a draft through that asset's real processing and checks, no attempt used. |
+| `build(asset_ids \| group \| stale, agent, change_from_previous?, dry_run?)` | 2.1: compile each asset's recipe, claim or reopen it, register the result as an attempt with the recipe as provenance, and check it (§14). |
 | `export_manifest()` | Write `art-manifest.json`. Also runs automatically after every decision. |
 | `handback()` | Summary: counts, final sheet, failures and flags, assets needing a human finish, and the 3–5 assets most likely to need taste revisions (ranked by attempts and warnings). |
 | `process` / `check(file, class \| options)` | Stateless utilities for one-off use outside a pipeline. These replace the skill's scripts. |
@@ -258,3 +259,55 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
   - Nothing ever writes to stdout.
   - Measured: first setup 5.9 s with a warm pip cache, then 19 ms.
 - **The skill's scripts** moved to `tests/reference/skill_scripts/`, kept only for the parity tests.
+
+## 14. Building assets (2.1)
+
+Status: **B1 done (2026-11-07)** · branch `v2.1`
+
+### Why
+
+In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent got there by writing a 34 KB one-off `make_badges.py`. The script holds palette constants copied by hand, drawing helpers, a shared frame, 46 per-badge drawing functions and the catalog. The agent wrote it to the wrong path first, then re-ran it by hand for each revision. artpipeline only saw the SVGs it produced. Three things follow:
+- **Re-locking can't rebuild.** A re-lock sends assets back to review, but nothing can rebuild them.
+- **The frame is invisible.** artpipeline doesn't know about the frame/subject split that keeps the set consistent.
+- **Every run starts from zero.** The drawing helpers are rewritten each time.
+
+2.1 makes the recipe the committed source of an asset, and artpipeline builds it. Everything is local: vector and bitmap work runs in-process and touches no network. **AI image generation managed by the tool is 2.2.**
+
+### Recipes
+
+- A brief asset may carry `build:` with `kind`, recipe paths (relative to the pipeline root, committed with the project) and `params`.
+- `groups.<name>.build` gives defaults. The asset's own fields override them, and params merge.
+- `style.tokens` names the colours (`gold: "#F2C14E"`). With no `palette`, the palette is the token values. When both are given, every token must be in the palette.
+- `lock_style(tokens=...)` locks named colours:
+  - The default is the previous lock's tokens, else the brief's.
+  - Without a palette argument, the palette is derived from the tokens.
+  - Recipes always use the current lock's tokens.
+
+| Kind | Milestone | What it builds |
+|---|---|---|
+| `svg` | **B1** ✅ | `source` and/or `template`. Substitutes `{{tokens.x}}`, `{{params.x}}` and `{{asset.id}}`; a param value `$x` names a token. Fills `<ap:slot>`/`<ap:part>`, inlines `<ap:include>`, embeds local `<image>` files, and expands the shape library (`ap:star`, `polygon`, `ring`, `arc`, `gear`, `burst`) to plain SVG. Rendered by the bundled resvg. |
+| `compose` | B2 | A layer stack of raster and SVG layers plus text (fonts converted to outlines), for store screenshots, flat icons from layers, and key art. |
+| `derive` | B3 | Built from approved assets: sprite sheets and texture atlases (Phaser atlas JSON, Godot `AtlasTexture`, `.spriteatlas`), plus `place` support. |
+| `script` | B4 | An agent-written script with declared inputs and outputs, hashed. The fallback for anything the other kinds can't express. |
+
+### Build semantics
+
+- **Deterministic.** The compiled bytes are hashed together with `BUILDER_VERSION` into the attempt's **fingerprint**. The build record on the attempt (`attempts.build`) stores the kind, the fingerprint, every input file with its sha256, the tokens actually used and the resolved params. `art-manifest.json` repeats it for the approved attempt.
+- **`build(asset_ids | group | stale)`.** Each asset runs in its own transaction, and refusals are reported per asset:
+  - A **pending** asset is claimed through the normal `claim`, so the style lock and gate rules apply.
+  - The agent's **own in-progress** asset is built in place.
+  - An **approved, placed or awaiting-review** asset whose fingerprint changed is **reopened**: its last attempt is marked `superseded`, and it gets one extra attempt, so stale rebuilds don't spend the retry budget. Gates still apply.
+  - `group` and `stale` selections skip non-heroes before the lock, with a note.
+- **Cause rules:**
+  - A rebuild with the same fingerprint as the latest attempt is refused: `UP_TO_DATE` when that attempt is awaiting review or approved, `NO_CAUSE_CHANGE` after a failure or rejection.
+  - After a failure or rejection, `change_from_previous` is required, and the recipe diff is appended to it.
+  - Stale rebuilds are described automatically ("rebuilt: tokens gold #F2C14E→#F5C451").
+- **Stale tracking.** `status()` reports `recipes.stale` (plus compile errors), and `status(asset_id)` reports `stale`. `lock_style` returns the assets its change made stale. An unused token never makes an asset stale.
+- **`dry_run`** compiles and checks with the asset's real processing and returns a strip. It changes no state and works on any asset, including non-heroes before the lock.
+- **Failures:** a recipe that doesn't compile is `BUILD_FAILED`, and no attempt is used. An asset without a recipe is `NO_RECIPE`.
+- **Schema v4:** adds `attempts.build` and `style_locks.tokens`, migrated in place from v3.
+
+### Validation plan
+
+- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`).
+- After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.
