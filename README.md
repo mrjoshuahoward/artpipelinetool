@@ -1,6 +1,6 @@
 # artpipeline
 
-> **This is v2 (Nov 2026).** The original v1 (May 2026, a browser-driven CLI) is at tag [`v0.1.0`](../../tree/v0.1.0).
+> **This is 2.1 (Nov 2026):** artpipeline now builds assets itself from committed recipes. 2.0 is at tag [`v2.0.0`](../../tree/v2.0.0) and the original v1 (May 2026, a browser-driven CLI) at [`v0.1.0`](../../tree/v0.1.0).
 
 A Claude Code plugin that lets an agent produce a full set of casual-mobile game art (icons, sprites, badges, UI, store art) that is correct, consistent, reviewable and reproducible. It pairs:
 
@@ -14,11 +14,50 @@ A Claude Code plugin that lets an agent produce a full set of casual-mobile game
   - Contact sheets shown to the model at true display sizes.
   - A generated `art-manifest.json`.
 
-artpipeline doesn't call AI image generators. It produces assets in two ways:
-- **It builds them itself from recipes (2.1).** These are SVG templates and per-asset sources committed with your project, coloured from named style tokens and drawn with a small shape library (`<ap:star>`, `<ap:gear>` and so on). Builds are deterministic, so after a palette or frame change, `build(stale=true)` rebuilds exactly the affected assets. Text is drawn from a committed font as outlines (`<ap:text>`), and `compose` recipes stack backgrounds, screenshots, other approved assets and captions into store screenshots and key art. `derive` recipes pack approved frames into sprite sheets and texture atlases, and `place` writes Phaser atlas JSON, Godot `AtlasTexture`/`SpriteFrames` or an Xcode `.spriteatlas`. When none of those fits, a `script` recipe runs a committed program that sees only the files it declares.
-- **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender.
+Assets reach the pipeline in two ways:
+- **artpipeline builds them from recipes (new in 2.1).** Everything runs locally, with no network.
+- **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender. artpipeline doesn't call AI image generators itself (planned for 2.2).
 
 Either way, artpipeline records, processes, checks and gates the result.
+
+## Building from recipes
+
+A brief asset with a `build:` entry is made by artpipeline from files committed with your project. One `build(group=...)` call claims, compiles, registers and checks a whole set.
+
+| Kind | Makes | How |
+|---|---|---|
+| `svg` | Badges, UI icons, flat sprites, tiles | SVG templates with `<ap:slot/>` for the per-asset part, `{{tokens.gold}}` colours from the style, and shapes (`<ap:star>`, `<ap:gear>`, `<ap:ring>`, `<ap:burst>` and more) |
+| `compose` | Store screenshots, key art, layered icons | A layer stack: backgrounds, images, other approved assets and captions, with fit, rounded clips, opacity, rotation and drop shadows |
+| `derive` | Sprite sheets and texture atlases | Packs approved frames into a grid or packed atlas, with padding, edge extrusion and animation |
+| `script` | Anything the others can't express | Runs a committed script that sees only the files it declares |
+
+Text is drawn from a committed font as outlines (`<ap:text>` or compose text layers), so built files never depend on the viewer's fonts. Long titles can wrap or shrink to fit.
+
+```yaml
+style:
+  tokens: {gold: "#F2C14E", ink: "#23282B"}
+groups:
+  badges: {build: {template: art-src/badge-frame.svg}}
+assets:
+  - {id: first-bloom, class: game_center_badge, subject: A first flower, group: badges,
+     acceptance_criteria: [Reads at 64 px], destination: badges/first-bloom.png,
+     build: {source: art-src/badges/first-bloom.svg, params: {label: "First Bloom"}}}
+```
+
+Builds are deterministic, so artpipeline knows when a recipe, template, font, param or token change makes an asset **stale**. Change a colour in the style lock and `build(stale=true)` rebuilds exactly the affected assets, plus, once those are re-approved, the screenshots and atlases built from them. A stale rebuild doesn't use up the asset's retry budget.
+
+The full recipe reference is in [`asset-manifest.md`](skills/casual-mobile-art-director/references/asset-manifest.md#build-recipes-artpipeline-21).
+
+## Placing into the engine
+
+`place` writes approved files into the game project, moving aside anything it didn't write:
+
+| Target | Writes | Atlases from `derive` also get |
+|---|---|---|
+| `xcassets` | Image sets and the app icon in your asset catalog | A `.spriteatlas` with one image set per frame |
+| `godot` | Files in the project, each with an `.import` preset (existing ones are kept) | An `AtlasTexture` `.tres` per frame, plus `SpriteFrames` for animations |
+| `phaser` | Files in the project plus a Loader pack file listing them | Atlas JSON and an `atlas` pack entry |
+| `staging` | A folder plus `ART-INSTALL.md`, for read-only or unknown projects | `<name>.json` frame data |
 
 ## Install
 
@@ -43,9 +82,9 @@ If you previously uploaded `casual-mobile-art-director` to claude.ai, remove tha
 
 1. Ask for a handoff brief or for the assets. The brief ends with a `## Asset Manifest` (see [`skills/casual-mobile-art-director/references/asset-manifest.md`](skills/casual-mobile-art-director/references/asset-manifest.md)).
 2. `init` loads it. The 2–4 **hero** assets are made first. You see them at real sizes and approve, then the style is locked.
-3. The agent (and any subagents) claim assets, produce them, and register each attempt. Failed checks and rejections come back with reasons; each asset gets 3 attempts, then it is flagged for you.
+3. The agent (and any subagents) build recipe assets or claim and produce the rest, registering each attempt. Failed checks and rejections come back with reasons; each asset gets 3 attempts, then it is flagged for you.
 4. Every 15 approvals, work pauses until you've looked at a review sheet.
-5. When you ask, `place` writes the approved files into your Xcode asset catalog, Godot project or Phaser `public/` folder, moving aside anything it didn't write.
+5. When you ask, `place` writes the approved files into your Xcode asset catalog, Godot project or Phaser `public/` folder.
 6. `handback` gives you the final sheet, the manifest, flags, and the assets most likely to need a taste pass.
 
 ## CLI
