@@ -14,7 +14,7 @@ from artpipeline.errors import PipelineError
 
 STATE_DIR = ".artpipeline"
 DB_NAME = "pipeline.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     reason TEXT,
     decided_at TEXT,
     style_lock_version INTEGER,
+    build TEXT,                    -- build record (recipe inputs, tokens, fingerprint) when artpipeline built it
     PRIMARY KEY (asset_id, n)
 );
 CREATE TABLE IF NOT EXISTS style_locks (
@@ -59,7 +60,8 @@ CREATE TABLE IF NOT EXISTS style_locks (
     hero_ids TEXT NOT NULL,
     refs TEXT NOT NULL,
     notes TEXT,
-    provisional INTEGER NOT NULL DEFAULT 0
+    provisional INTEGER NOT NULL DEFAULT 0,
+    tokens TEXT                    -- named colours (JSON object), NULL when the lock has none
 );
 CREATE TABLE IF NOT EXISTS staged (
     path TEXT PRIMARY KEY,          -- relative to the root, absolute when outside it
@@ -197,6 +199,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(style_locks)")}
     if "provisional" not in cols:
         conn.execute("ALTER TABLE style_locks ADD COLUMN provisional INTEGER NOT NULL DEFAULT 0")
+    if "tokens" not in cols:  # v4 (2.1)
+        conn.execute("ALTER TABLE style_locks ADD COLUMN tokens TEXT")
+    if "build" not in {r[1] for r in conn.execute("PRAGMA table_info(attempts)")}:
+        conn.execute("ALTER TABLE attempts ADD COLUMN build TEXT")
     conn.execute("""CREATE TABLE IF NOT EXISTS staged (path TEXT PRIMARY KEY, asset_id TEXT NOT NULL,
                     n INTEGER NOT NULL, sha256 TEXT NOT NULL, staged_at TEXT NOT NULL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS placements (asset_id TEXT NOT NULL, target TEXT NOT NULL,

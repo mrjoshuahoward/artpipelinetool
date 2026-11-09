@@ -50,6 +50,16 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--notes")
     s.add_argument("--change", dest="change_from_previous", help="Required for attempt 2+")
 
+    s = sub.add_parser("build", help="Build assets from their recipes and register the results")
+    s.add_argument("asset_ids", nargs="*")
+    s.add_argument("--agent", required=True)
+    s.add_argument("--group")
+    s.add_argument("--stale", action="store_true", help="Only assets whose recipe output changed")
+    s.add_argument("--change", dest="change_from_previous", help="What changed (needed after a rejection)")
+    s.add_argument("--rights")
+    s.add_argument("--notes")
+    s.add_argument("--dry-run", action="store_true", help="Compile and check without using an attempt")
+
     s = sub.add_parser("decide", help="Approve or reject the current attempt")
     s.add_argument("asset_id")
     s.add_argument("decision", choices=["approve", "reject"])
@@ -60,6 +70,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--by", required=True)
     s.add_argument("--block", help="Style block text (default: the brief's)")
     s.add_argument("--palette", help="Comma-separated hexes (default: the brief's)")
+    s.add_argument("--token", action="append", dest="tokens", metavar="NAME=HEX",
+                   help="Named colour for recipes (repeat); replaces the previous lock's tokens")
     s.add_argument("--hero", action="append", dest="hero_ids")
     s.add_argument("--ref", action="append", dest="references")
     s.add_argument("--notes")
@@ -254,12 +266,24 @@ def run(argv: list[str] | None = None) -> tuple[int, Any]:
             prov = {k: getattr(a, k) for k in
                     ("route", "tool", "model", "prompt", "seed", "references", "rights", "notes")}
             out = p.register_attempt(a.asset_id, a.file, a.agent, prov, a.change_from_previous)
+        elif a.cmd == "build":
+            out = p.build(a.agent, a.asset_ids or None, group=a.group, stale=a.stale,
+                          change_from_previous=a.change_from_previous, rights=a.rights, notes=a.notes,
+                          dry_run=a.dry_run)
         elif a.cmd == "decide":
             out = p.decide(a.asset_id, a.decision, a.by, a.reason)
         elif a.cmd == "lock-style":
             pal = [h.strip() for h in a.palette.split(",")] if a.palette else None
+            toks = None
+            if a.tokens:
+                toks = {}
+                for t in a.tokens:
+                    k, sep, v = t.partition("=")
+                    if not sep:
+                        raise PipelineError("INVALID_ARGUMENT", f"--token '{t}' must be NAME=#RRGGBB")
+                    toks[k.strip()] = v.strip()
             out = p.lock_style(a.by, a.block, palette=pal, hero_ids=a.hero_ids,
-                               references=a.references, notes=a.notes, provisional=a.provisional)
+                               references=a.references, notes=a.notes, provisional=a.provisional, tokens=toks)
         elif a.cmd == "pass-gate":
             out = p.pass_gate(a.gate_id, a.by, a.notes)
         elif a.cmd == "flag":

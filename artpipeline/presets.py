@@ -43,6 +43,10 @@ PRESETS: dict[str, AssetClass] = {
     "pixel_sprite": AssetClass(
         format="png", master=(32, 32), alpha="required", pixel_art=True, display_sizes=[128, 64],
     ),
+    # A sprite sheet / texture atlas built by `derive`: the master is the texture size.
+    "sprite_atlas": AssetClass(
+        format="png", master=(2048, 2048), alpha="required", display_sizes=[512],
+    ),
     "tile": AssetClass(format="png", master=(256, 256), alpha="any", display_sizes=[128, 64]),
     "key_art": AssetClass(format="png", master=(2048, 1152), alpha="forbidden", display_sizes=[640]),
 }

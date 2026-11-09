@@ -45,3 +45,6 @@ SOURCE_NOT_FOUND = "SOURCE_NOT_FOUND"
 WRONG_FORMAT = "WRONG_FORMAT"
 NOTHING_CLAIMABLE = "NOTHING_CLAIMABLE"
 INVALID_ARGUMENT = "INVALID_ARGUMENT"
+BUILD_FAILED = "BUILD_FAILED"      # a recipe did not compile (no attempt used)
+UP_TO_DATE = "UP_TO_DATE"        # nothing changed since the last build; nothing to do
+NO_RECIPE = "NO_RECIPE"          # the asset has no build entry in the brief

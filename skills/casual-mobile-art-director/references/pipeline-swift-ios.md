@@ -33,7 +33,7 @@ Every native iOS game ships through `Assets.xcassets`. Set this up correctly or 
 
 ## SpriteKit-specific
 
-- **Texture atlases** — Xcode auto-atlases any folder ending in `.atlas` inside the asset catalog. Use this; don't ship loose textures.
+- **Texture atlases** — Xcode packs a **Sprite Atlas** (`.spriteatlas`) inside the asset catalog, or a loose `.atlas` folder reference, at build time. Use one; don't ship loose textures. artpipeline's `derive` recipes place as `.spriteatlas`.
 - **`SKAction` library** — define reusable actions once (`SKAction.scaleTo`, `.rotateByAngle`, `.sequence`, `.group`) and compose. Easing via `timingMode` (`.easeInEaseOut`, `.easeOut`) — basic but sufficient for most casual juice.
 - **Custom easing** — `SKAction.customAction(withDuration:actionBlock:)` lets you implement spring/bounce curves not in the default set.
 - **Shaders** — `SKShader` accepts GLSL-style fragment shaders. Same lexicon as Godot for palette swaps, outlines, etc. Apple's shader docs are thin; community examples carry you.

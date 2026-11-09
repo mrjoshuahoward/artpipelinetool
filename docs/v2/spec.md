@@ -18,7 +18,7 @@ v1 pursued the same goal, but its design assumed the agent drove an image genera
 | Owner | Responsibility |
 |---|---|
 | **`casual-mobile-art-director` skill** | Judgment: direction, style, routing an asset class to a tool, prompt writing, taste review, talking to the user. |
-| **artpipeline v2 (this tool)** | Enforcement and memory: what exists, what state each asset is in, what was tried, what passed, what the user signed off, and where files go. Anything deterministic and repeatable. |
+| **artpipeline v2 (this tool)** | Enforcement and memory: what exists, what state each asset is in, what was tried, what passed, what the user signed off, and where files go. Anything deterministic and repeatable. **From 2.1 it also builds assets from committed local recipes (§14).** |
 | **Connected tools** (image-gen MCPs, Recraft, VectorCraft, Canva, Blender, Claude-written SVG) | Producing pixels and vectors. **v2 never calls a generator itself.** |
 
 ### Non-goals (v2.0)
@@ -155,6 +155,7 @@ All tools return structured output (an output schema). Review tools also return 
 | `place(asset_ids \| approved, target, confirm_overwrite=false)` | Write files into the engine layout (see §7). Returns the files written and anything superseded. |
 | `register_attempts(attempts[], agent, route, tool, …)` / `decide_batch(decisions[], by)` | Batch forms for large sets: one call per batch, one grid view of everything that passed. Refusals are reported per asset. |
 | `check_image(files, asset_id)` | Free pre-check: a draft through that asset's real processing and checks, no attempt used. |
+| `build(asset_ids \| group \| stale, agent, change_from_previous?, dry_run?)` | 2.1: compile each asset's recipe, claim or reopen it, register the result as an attempt with the recipe as provenance, and check it (§14). |
 | `export_manifest()` | Write `art-manifest.json`. Also runs automatically after every decision. |
 | `handback()` | Summary: counts, final sheet, failures and flags, assets needing a human finish, and the 3–5 assets most likely to need taste revisions (ranked by attempts and warnings). |
 | `process` / `check(file, class \| options)` | Stateless utilities for one-off use outside a pipeline. These replace the skill's scripts. |
@@ -168,9 +169,16 @@ The **CLI** mirrors the tools one to one (`artpipeline claim --n 4 --agent sub-2
 | `staging` (default; required for read-only repos) | `<root>/<destination>` (written on approval), plus `ART-INSTALL.md` with an `rsync -R` copy command |
 | `xcassets` | `<name>.imageset/` (scales from `@Nx` renditions, else single-scale) and `AppIcon.appiconset/` (single 1024 universal) with `Contents.json`. Game Center art, store screenshots and Icon Composer layers are skipped with a reason: they are uploaded to App Store Connect or built in Icon Composer |
 | `godot` | Files at `res://<destination>`, plus a lossless, no-mipmap `.import` preset where none exists. Godot 4 sets pixel-art filtering per project or node, not on import; the result says so |
-| `phaser` | Individual files plus a Loader pack file (`<web_root>/artpipeline-pack.json`, section `artpipeline`, keys are asset ids). Atlas packing through the TexturePacker CLI is not done yet |
+| `phaser` | Individual files plus a Loader pack file (`<web_root>/artpipeline-pack.json`, section `artpipeline`, keys are asset ids) |
+
+**Atlases (2.1 B3).** An asset built by `derive` carries its frame table, and every target writes it in the engine's form:
+- `staging`/`phaser`: `<name>.json` beside the sheet. This is the TexturePacker-style JSON hash that Phaser's `load.atlas` reads; `meta.animation` holds fps, loop and the play sequence. The Phaser pack entry is `{type: "atlas", textureURL, atlasURL}`.
+- `godot`: an `AtlasTexture` `.tres` per frame in `<name>_frames/`, with `margin` for trimmed frames and `filter_clip`, plus `<name>.sprite_frames.tres` (`SpriteFrames`, animation `default`) when the atlas is an animation.
+- `xcassets`: `<name>.spriteatlas/` with one imageset per frame, cut from the sheet and restored to its untrimmed size. Xcode packs it at build time.
 
 Before any write, existing files are moved to `superseded/` with a timestamp, unless `confirm_overwrite` is set. Every placed file is recorded in the manifest. A file the pipeline wrote itself (tracked by hash) is replaced in place, so placing again is idempotent; an imageset folder is the pipeline's entirely, so stray files in it are moved aside too. Engine targets are refused while the style lock is provisional.
+
+Verified (2026-11-08, B3): the Godot output loads in Godot 4.7 headless. The `SpriteFrames` resource plays 4 frames at 10 fps, looping, with a repeated frame. Region and trim margin come back right, and a trimmed frame reports its original 128×128 size. A catalog with two `.spriteatlas` folders compiles with `actool` with no warnings into packed images. Phaser atlas loading was verified in WebKit on 2026-11-08 on a real game (a test copy of Puff Pals): `load.pack` loads the atlas, all 12 trimmed frames draw pixel-identical to their source PNGs, and play and merges work from it.
 
 Verified (2026-11-05): an app icon and two `ui_icon_svg` assets placed into a scratch copy of Sorting Line's `Assets.xcassets` compile with `actool` with no warnings, and a minimal SwiftUI app on the iOS 27 simulator shows the icon on the home screen and loads both imagesets at @3x.
 
@@ -258,3 +266,73 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
   - Nothing ever writes to stdout.
   - Measured: first setup 5.9 s with a warm pip cache, then 19 ms.
 - **The skill's scripts** moved to `tests/reference/skill_scripts/`, kept only for the parity tests.
+
+## 14. Building assets (2.1)
+
+Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validated on two sample projects; released as 2.1.0** · `main`
+
+### Why
+
+In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent got there by writing a 34 KB one-off `make_badges.py`. The script holds palette constants copied by hand, drawing helpers, a shared frame, 46 per-badge drawing functions and the catalog. The agent wrote it to the wrong path first, then re-ran it by hand for each revision. artpipeline only saw the SVGs it produced. Three things follow:
+- **Re-locking can't rebuild.** A re-lock sends assets back to review, but nothing can rebuild them.
+- **The frame is invisible.** artpipeline doesn't know about the frame/subject split that keeps the set consistent.
+- **Every run starts from zero.** The drawing helpers are rewritten each time.
+
+2.1 makes the recipe the committed source of an asset, and artpipeline builds it. Everything is local: vector and bitmap work runs in-process and touches no network. **AI image generation managed by the tool is 2.2.**
+
+### Recipes
+
+- A brief asset may carry `build:` with `kind`, recipe paths (relative to the pipeline root, committed with the project) and `params`.
+- `groups.<name>.build` gives defaults. The asset's own fields override them, and params merge.
+- `style.tokens` names the colours (`gold: "#F2C14E"`). With no `palette`, the palette is the token values. When both are given, every token must be in the palette.
+- `lock_style(tokens=...)` locks named colours:
+  - The default is the previous lock's tokens, else the brief's.
+  - Without a palette argument, the palette is derived from the tokens.
+  - Recipes always use the current lock's tokens.
+
+| Kind | Milestone | What it builds |
+|---|---|---|
+| `svg` | **B1** ✅ | `source` and/or `template`. Substitutes `{{tokens.x}}`, `{{params.x}}` and `{{asset.id}}`; a param value `$x` names a token. Fills `<ap:slot>`/`<ap:part>`, inlines `<ap:include>`, embeds local `<image>` files, and expands the shape library (`ap:star`, `polygon`, `ring`, `arc`, `gear`, `burst`) to plain SVG. Rendered by the bundled resvg. |
+| `compose` | **B2** ✅ | A layer stack on a canvas the size of the master: `svg` (a recipe file), `image` (local raster/SVG), `asset` (another asset's approved output), `text`, `fill`. Per-layer box, fit, rounded clip, opacity, rotation and drop shadow. Compiles to one SVG, so raster classes render through the same resvg pass. For store screenshots, key art and layered icons. |
+| `derive` | **B3** ✅ | Packs other assets' approved outputs (`frames`, or `frames_group`) into one PNG the size of the class master (preset `sprite_atlas`, 2048²). `layout: grid` gives a sprite sheet: frames centred in equal cells, with `columns`. `layout: pack` gives an atlas: frames trimmed of transparent borders, then shelf-packed tallest first. Also `cell` (scale every frame to fit; vectors need it; pixel art scales only by whole numbers), `padding`, `extrude` (repeat edge pixels) and `animation: {fps, loop, sequence}`, where the sequence may repeat frames. The frame table is part of the build record and the manifest, and `place` writes it per engine (§7). The fingerprint hashes the pixels plus the table, not the PNG encoding. The class must be raster with no trim, remove_bg or renditions, because those would move the frames. |
+| `script` | **B4** ✅ | A committed program (`script`, plus `inputs`: paths or globs) run in an empty temp directory holding only the script and its declared inputs, so an undeclared read fails and the recorded inputs are complete. `.py` runs with artpipeline's Python; `.sh` with `/bin/sh`. The job JSON (argv[1], `$ARTPIPELINE_JOB`, `artpipeline.build.script.job()`) gives asset, params, `tokens` (only those listed, else all), master, approved `assets` dependencies and the `output` path (`.svg` for vector classes, else `.png`). Fixed environment (TZ=UTC, PYTHONHASHSEED=0, SOURCE_DATE_EPOCH=0, no caller env), `timeout` 60 s (max 600). The fallback for anything the other kinds can't express. |
+
+### Text (B2)
+
+`<ap:text>` (in any SVG recipe) and compose `text` layers draw text from a **committed font file** into plain `<path>` outlines with fontTools. Built files never depend on the fonts of the machine that renders them, and plain `<text>` in a recipe is a `BUILD_FAILED`.
+- Layout: cmap lookup, advances, and pair kerning (GPOS `kern` pair adjustments, else the legacy `kern` table). There are no ligatures and no contextual shaping, so Arabic and Indic scripts are out of scope: draw those elsewhere and register them. A missing glyph is an error naming the characters.
+- Options: anchor, cap-height vertical alignment, `max-width` with wrap or shrink-to-fit, line height, letter spacing, variable-font axes, and `font-index` for collections. Paint attributes pass through.
+- The font file is a build input (sha256 recorded). Fingerprints cover the drawn output, so a font edit makes an asset stale only where it changes the outlines.
+- resvg-py was checked first: it can load explicit font files, but `<text>` would still leave the built SVG dependent on the viewer's fonts, so text is outlined instead.
+
+### Build semantics
+
+- **Deterministic.** The compiled bytes are hashed together with `BUILDER_VERSION` into the attempt's **fingerprint**. The build record on the attempt (`attempts.build`) stores the kind, the fingerprint, every input file with its sha256, the tokens actually used and the resolved params. `art-manifest.json` repeats it for the approved attempt.
+- **`build(asset_ids | group | stale)`.** Each asset runs in its own transaction, and refusals are reported per asset:
+  - A **pending** asset is claimed through the normal `claim`, so the style lock and gate rules apply.
+  - The agent's **own in-progress** asset is built in place.
+  - An **approved, placed or awaiting-review** asset whose fingerprint changed is **reopened**: its last attempt is marked `superseded`, and it gets one extra attempt, so stale rebuilds don't spend the retry budget. Gates still apply.
+  - `group` and `stale` selections skip non-heroes before the lock, with a note.
+- **Cause rules:**
+  - A rebuild with the same fingerprint as the latest attempt is refused: `UP_TO_DATE` when that attempt is awaiting review or approved, `NO_CAUSE_CHANGE` after a failure or rejection.
+  - After a failure or rejection, `change_from_previous` is required, and the recipe diff is appended to it.
+  - Stale rebuilds are described automatically ("rebuilt: tokens gold #F2C14E→#F5C451").
+- **Stale tracking.** `status()` reports `recipes.stale` (plus compile errors), and `status(asset_id)` reports `stale`. `lock_style` returns the assets its change made stale. An unused token never makes an asset stale.
+- **`dry_run`** compiles and checks with the asset's real processing and returns a strip. It changes no state and works on any asset, including non-heroes before the lock.
+- **Dependencies (compose `asset` layers, derive `frames`, script `assets`).** An `asset` layer or frame embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
+- **Script fingerprints hash inputs, not output.** The script, its declared files, dependencies, listed tokens, params, asset fields and master, so `status()` and stale reports never run code. The output's sha256 is recorded as `output`. When a stale script asset rebuilds to the same bytes as its approved or awaiting-review attempt, `build` refreshes that attempt's record (event `rebuild_same`) and returns `up_to_date` instead of reopening it. `dry_run` runs a script twice and warns when the bytes differ. Scripts are project code run only on `build`/`dry_run`, like a Makefile; they are not sandboxed beyond the working directory and environment.
+- **Re-locks review only what changed.** After a user re-lock with the same style text, a recipe asset stays approved (listed in `unchanged`) when its fingerprint is the same under the new tokens and its output doesn't hard-code a hex the palette dropped. Everything else returns to review: registered files, recipes that changed or can't compile, any change to the style text, and everything around a provisional lock. A composite with unchanged parts stays approved; if its parts were rebuilt it goes stale once they are re-approved.
+- **Waiting is not an error.** A composite whose dependency isn't approved right now appears under `status().recipes.waiting` (and `waiting_on` for one asset), not `errors`.
+- **Selections:** `build` refuses asset ids combined with `group` or `stale`. `place` refuses project targets while a batch gate is open (staging still works).
+- **Failures:** a recipe that doesn't compile is `BUILD_FAILED`, and no attempt is used. An asset without a recipe is `NO_RECIPE`.
+- **Schema v4:** adds `attempts.build` and `style_locks.tokens`, migrated in place from v3.
+
+### Validation plan
+
+- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored), derive plus atlas placement (`tests/test_derive.py`), and script recipes (`tests/test_script.py`).
+- After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.
+- **Sample runs (2026-11-08):**
+  - *Lantern Drift* (new Godot game, all four recipe kinds): runs in Godot 4.7 with no import errors. Changing one token made exactly the 8 assets using it stale, and two `build(stale=true)` rounds carried the change through the composites.
+  - *Puff Pals* (a test copy of a shipping Phaser 4 game): script recipes fitted art to the game's real colliders, and `derive` plus `place --target phaser` worked in WebKit.
+  - The billed with/without-plugin eval has not been run.
+- A `script` recipe's fingerprint and job leave out `asset.destination`, so moving a file doesn't make it stale; editing the subject or group is reported by name.

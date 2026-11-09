@@ -254,3 +254,13 @@ def test_cli_check_process_sheet(tmp_path):
 
     code, out = run(["contact-sheet", str(tmp_path / "sheet.png"), str(f), str(svg), "--sizes", "128,32"])
     assert code == 0 and Path(out["pages"][0]).is_file()
+
+
+def test_grid_keeps_large_tiles_from_blowing_up_small_ones():
+    from artpipeline.imaging.sheet import GRID_MAX_EDGE, SheetItem, render_grid_pages
+    img = Image.new("RGBA", (64, 64), (200, 80, 40, 255))
+    icons = [SheetItem(label=f"i{n}", image=img, sizes=[64], backgrounds=["#000000", "#FFFFFF"]) for n in range(12)]
+    atlas = SheetItem(label="atlas", image=img, sizes=[1024], backgrounds=["#000000", "#FFFFFF"])
+    pages = render_grid_pages([*icons[:6], atlas, *icons[6:]])
+    assert len(pages) == 2                                # 12 icons together, the atlas on its own page
+    assert all(max(p.size) <= GRID_MAX_EDGE for p in pages)

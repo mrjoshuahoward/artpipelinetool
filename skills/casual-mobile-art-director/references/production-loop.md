@@ -30,13 +30,17 @@ Then call `init(brief_path, root)`. It is safe to re-run after editing the brief
 - Work packets, the manifest and `handback` all mark the work provisional. Open the hand-back with it: "the style is provisionally locked by me; nothing is final until you approve the hero sheet."
 - Never lock provisionally when the user is present or reachable. Ask them instead. If they only said "just make them" without saying they're away, make the heroes and stop at the lock.
 
-Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review.
+Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review. Recipe assets stay approved when the new tokens don't change them and the style text is the same (`unchanged` in the result). Registered files always go back, because nothing proves they still fit.
 
 ## 2. Choose the production route per asset
 
 Prefer, in order (pick the first that can hit the style):
 
-1. **Code-native:** an SVG you write directly, the engine's procedural drawing code, a shader, or particles. It's free, deterministic, always on-palette and easy to revise. Most flat, vector, geometric, icon, badge and UI work belongs here. If the game already draws its pieces in code (as many Phaser and Godot games do), **reuse that geometry** so store art and badges stay on-model. Register the SVG even for PNG classes; artpipeline renders it at the master size.
+1. **Code-native:** an SVG you write directly, the engine's procedural drawing code, a shader, or particles. It's free, deterministic, always on-palette and easy to revise. Most flat, vector, geometric, icon, badge and UI work belongs here. If the game already draws its pieces in code (as many Phaser and Godot games do), **reuse that geometry** so store art and badges stay on-model.
+   - **For a set, use build recipes, not a generator script.** Put the shared look in a template (frame, plate, keyline, `<ap:slot/>` for the subject), each asset's subject in its own small SVG, and the palette in `style.tokens`. Then call `build(group=...)` or `build(asset_ids=[...])`: artpipeline compiles, claims, registers and checks in one call (see `asset-manifest.md` → Build recipes). Iterate on a draft with `build(..., dry_run=true)`, which is free. A palette or frame change later is one `build(stale=true)`.
+   - **Store screenshots, key art and anything with text are `kind: compose` recipes:** a background, the gameplay capture or approved sprites as layers, and captions drawn from a committed font. Text in recipes is always `<ap:text>`/text layers from a font file, never plain `<text>`. Build the parts first; composites that use `asset:` layers wait until those parts are approved.
+   - **Anything the recipe kinds can't express** (procedural noise, a custom raster effect, a drawing script the game already has) is a `kind: script` recipe: commit the script, declare every file it reads, and artpipeline runs it with only those files. Never leave a generator script outside the brief, because then nothing can rebuild its output.
+   - A one-off SVG can still be registered directly; artpipeline renders it at the master size, even for PNG classes.
 2. **Agent-driven app:** VectorCraft, PhotoCraft or EffectCraft MCP, the Blender connector, Figma or Canva. Use these when you need the app's operations (boolean ops, PSD layering, Lottie export, 3D renders, layout templates).
 3. **Image generation:** painterly, illustrated, photographic or textural looks that code can't reach; volume after a style lock; hero drafts that a human will finish. Give it a real role when the style calls for it. Don't confine it to concepts out of caution. Use the work packet's `style.block` plus the asset's `subject`, and pass the lock's references to generators that take them.
 
@@ -54,6 +58,7 @@ register_attempt(asset_id, file, ...) → stored, processed (bg removal, trim, f
 decide(approve | reject, reason)      → rejected assets return to the queue with your reason in the next packet
 ```
 
+- **Recipe assets:** the loop is edit recipe → `build` → look at the grid → `decide_batch`. A rebuild after a rejection or failed check needs `change_from_previous`; artpipeline appends the recipe diff and refuses a rebuild that would produce the identical file.
 - **Batch it for sets.** Past a handful of assets, produce a batch, then `register_attempts` (one call, one shared route/tool) and `decide_batch`. Passing assets come back as one grid at their smallest display size, colour and greyscale, on every review background. Open a per-asset strip (in `strips`) only for anything you're unsure of. Budget turns: a 46-asset set should take a few dozen tool calls, not hundreds.
 - **Pre-check drafts for free.** `check_image(files=[draft], asset_id=...)` runs the asset's real processing and checks without using an attempt. Use it while iterating on a generator or a palette, then register the version you'd approve. Don't write your own checker or sheet script; if the tools are missing something, say so in the hand-back.
 - **Retry budget:** at most 3 attempts per asset (the brief's `max_attempts`). Each retry must change the *cause* (the subject line, a reference, a seed, the geometry) and say so in `change_from_previous`. Blind rerolls are refused. An exhausted asset is flagged for the user; move on.
@@ -78,9 +83,10 @@ The asset isn't done until it looks right **in the game**:
   - `xcassets`: one `<name>.imageset` per asset (`@1x/@2x/@3x` renditions become scales; otherwise single-scale) and an `AppIcon.appiconset` for a 1024 flat icon. Game Center art, store screenshots and Icon Composer layers are skipped with the reason: they don't belong in the catalog.
   - `godot`: files at `res://<destination>` plus a lossless, no-mipmap `.import` preset (an existing `.import` is never replaced). Pixel-art filtering is a project or node setting in Godot 4; the result says so.
   - `phaser`: files at `<destination>` plus `artpipeline-pack.json` in the web root (`public/` for Vite); load it with `this.load.pack("artpipeline", "artpipeline-pack.json")`. Keys are asset ids. Destinations outside the web root are written but left out of the pack, with a note.
+  - Atlases built by `derive` also get their frame data: Phaser atlas JSON plus a pack `atlas` entry, Godot `AtlasTexture`/`SpriteFrames` `.tres`, an Xcode `.spriteatlas`.
   - `staging`: nothing leaves the pipeline root; writes `ART-INSTALL.md` with an `rsync -R` copy command. Use it for read-only repos.
   - Anything already there that the pipeline didn't write moves to `superseded/` (unless `confirm_overwrite`, which needs the user's say-so). Engine targets are refused under a provisional lock. Every placed file is recorded under `approved.placed` in the manifest.
-- **Pack atlases** (TexturePacker CLI, or the engine's own packer) when the set is final.
+- **Pack atlases with a `derive` recipe** (`asset-manifest.md` → `kind: derive`) once the frames are approved: a sprite sheet (`layout: grid`, with `animation`) or a texture atlas (`layout: pack`). `place` writes the engine's atlas data. Reach for TexturePacker only for what `derive` lacks: rotation, polygon packing, multi-page atlases.
 - **Screenshot in context:**
   - Phaser: the dev server plus Playwright on the real canvas.
   - Godot: the Godot MCP or a headless run.

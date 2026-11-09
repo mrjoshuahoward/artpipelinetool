@@ -26,7 +26,7 @@ Godot reimports assets on change; your import settings are part of the art direc
 
 ## Sprite atlases
 
-Godot has built-in atlas support via `AtlasTexture`, but TexturePacker remains the most flexible external tool. For most casual projects:
+Godot has built-in atlas support via `AtlasTexture`. artpipeline's `derive` recipes place as one `AtlasTexture` `.tres` per frame (trimmed frames keep their original size through `margin`), plus a `SpriteFrames` `.tres` for animated sheets (checked in Godot 4.7). TexturePacker is still the tool for rotation, polygon packing and multi-page atlases. For most casual projects:
 
 - **Per-scene atlases** rather than one mega-atlas — keeps memory loads scoped.
 - **Power-of-two textures** still help on older mobile GPUs even though Godot 4 doesn't strictly require them.
