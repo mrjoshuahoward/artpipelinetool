@@ -395,3 +395,42 @@ def test_build_over_cli(recipes, monkeypatch, capsys):
     assert code == 0 and out["results"][0]["status"] == "awaiting_review"
     code, out = run(["build", "--agent", "main", "--group", "odd", "--dry-run"])
     assert code == 0 and out["counts"] == {"pass": 2}
+
+
+def _approve_all(p: Pipeline) -> None:
+    _approve_heroes_and_lock(p)
+    p.build("main", ["badge_01", "badge_02", "badge_03"])
+    p.review_sheet(pending_review=True)
+    p.decide_batch([{"asset_id": a, "decision": "approve"} for a in ("badge_01", "badge_02", "badge_03")], "agent")
+
+
+def test_relock_keeps_what_the_new_tokens_dont_change(bp, project):
+    write(project, "art/badge_03.svg", '<rect x="20" y="20" width="24" height="24" fill="{{tokens.ink}}"/>')
+    write(project, "art/frame.svg", FRAME.replace("{{band}}", "{{tokens.ink}}"))
+    _approve_all(bp)
+    lock = bp.lock_style("user", tokens={**TOKENS, "gold": "#F5C451"})
+    assert sorted(lock["rereview"]) == ["badge_01", "badge_02"]
+    assert lock["unchanged"] == ["badge_03"]
+    assert bp.status("badge_03")["status"] == "approved" and bp.status("badge_03")["stale"] is False
+
+
+def test_relock_rereviews_everything_when_the_style_text_changes(bp, project):
+    write(project, "art/badge_03.svg", '<rect x="20" y="20" width="24" height="24" fill="{{tokens.ink}}"/>')
+    _approve_all(bp)
+    lock = bp.lock_style("user", style_block="Flat, but different.", tokens={**TOKENS, "gold": "#F5C451"})
+    assert "badge_03" in lock["rereview"] and "unchanged" not in lock
+
+
+def test_relock_rereviews_a_hard_coded_colour_the_palette_dropped(bp, project):
+    write(project, "art/badge_03.svg", '<rect x="20" y="20" width="24" height="24" fill="#F2C14E"/>')
+    _approve_all(bp)
+    lock = bp.lock_style("user", tokens={**TOKENS, "gold": "#F5C451"})
+    assert "badge_03" in lock["rereview"]
+    assert "badge_03" not in lock.get("unchanged", [])
+
+
+def test_build_refuses_ids_with_a_selection(bp):
+    for kw in ({"group": "odd"}, {"stale": True}):
+        with pytest.raises(PipelineError) as e:
+            bp.build("main", ["badge_00"], **kw)
+        assert e.value.code == E.INVALID_ARGUMENT

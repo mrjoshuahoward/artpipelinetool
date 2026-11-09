@@ -20,7 +20,7 @@ from artpipeline.imaging.render import RenderError, load_rgba
 from artpipeline.imaging.sheet import SheetItem, build_sheets, render_grid_pages, render_page
 from artpipeline.errors import PipelineError
 from artpipeline import place as place_mod
-from artpipeline.build import BuildError, compile_recipe, describe_change
+from artpipeline.build import BuildError, DependencyWaiting, compile_recipe, describe_change
 from artpipeline.intake import load_brief
 from artpipeline.schema import AssetClass, Provenance, Settings, Style, check_tokens, palette_of, tokens_in_palette
 from artpipeline.store import Store, dumps, loads
@@ -665,6 +665,9 @@ class Pipeline:
         """Build assets from their recipes and register each result as an attempt (claiming pending
         assets, and reopening approved or awaiting-review ones whose recipe output changed).
         dry_run compiles and checks without touching any state."""
+        if asset_ids and (group or stale):
+            raise PipelineError(E.INVALID_ARGUMENT, "Pass asset ids, or a group/stale selection, not both.",
+                                hint="To build both, make two build calls.")
         changes = dict(changes or {})
         with self.store.tx() as c:
             rows = {r["id"]: r for r in c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord")}
@@ -680,10 +683,10 @@ class Pipeline:
             pool = [r for r in rows.values() if loads(r["spec"]).get("build")
                     and (group is None or loads(r["spec"]).get("group") == group)]
             if stale:
-                stale_ids, _ = self._stale_report([r["id"] for r in pool])
+                stale_ids, *_ = self._stale_report([r["id"] for r in pool])
                 pool = [r for r in pool if r["id"] in stale_ids]
             elif not dry_run:
-                stale_ids, _ = self._stale_report([r["id"] for r in pool])
+                stale_ids, *_ = self._stale_report([r["id"] for r in pool])
                 pool = [r for r in pool if r["status"] == PENDING or r["id"] in stale_ids
                         or (r["status"] == IN_PROGRESS and (r["lease_owner"] == agent or _expired(r, now)))]
             if lock is None and not dry_run and any(loads(r["spec"]).get("hero") for r in rows.values()):
@@ -742,6 +745,10 @@ class Pipeline:
             return compile_recipe(self.root, recipe, tokens=tokens, asset=asset, master=tuple(klass["master"]),
                                   assets=self._approved_file, pixel_art=bool(klass.get("pixel_art")),
                                   vector=AssetClass.model_validate(klass).is_vector, run=run)
+        except DependencyWaiting as e:
+            raise PipelineError(E.BUILD_FAILED, f"'{r['id']}': {e}",
+                                hint="Approve that asset, then build again; no attempt was used.",
+                                waiting_on=e.waiting_on) from None
         except BuildError as e:
             raise PipelineError(E.BUILD_FAILED, f"'{r['id']}': {e}",
                                 hint="Fix the recipe and build again; no attempt was used.") from None
@@ -754,8 +761,8 @@ class Pipeline:
         if r is None:
             raise BuildError(f"layer asset '{asset_id}' is not in the pipeline")
         if att is None or r["status"] not in (APPROVED, PLACED):
-            raise BuildError(f"layer asset '{asset_id}' is {r['status']}; build it from approved art, "
-                             "so approve that asset first")
+            raise DependencyWaiting(f"layer asset '{asset_id}' is {r['status']}; build it from approved art, "
+                                    "so approve that asset first", f"{asset_id} ({r['status']})")
         p = self.root / (att["processed_path"] or att["source_path"])
         if not p.is_file():
             raise BuildError(f"approved file of '{asset_id}' is missing: {_rel(p, self.root)}")
@@ -873,9 +880,11 @@ class Pipeline:
             out["reopened_from"] = status
         return out
 
-    def _stale_report(self, asset_ids: Iterable[str] | None = None) -> tuple[list[str], dict[str, str]]:
+    def _stale_report(
+        self, asset_ids: Iterable[str] | None = None,
+    ) -> tuple[list[str], dict[str, str], dict[str, str]]:
         """Assets whose latest attempt was built from a recipe that now compiles to something else.
-        Returns (stale ids, {id: compile error})."""
+        Returns (stale ids, {id: compile error}, {id: the dependency it is waiting for})."""
         with self.store.tx() as c:
             q = "SELECT * FROM assets WHERE in_brief=1 ORDER BY ord"
             rows = [r for r in c.execute(q) if loads(r["spec"]).get("build")
@@ -884,7 +893,7 @@ class Pipeline:
                 wanted = set(asset_ids)
                 rows = [r for r in rows if r["id"] in wanted]
             latest = {r["id"]: _latest_attempt(c, r["id"]) for r in rows}
-        stale, errors = [], {}
+        stale, errors, waiting = [], {}, {}
         for r in rows:
             att = latest[r["id"]]
             prev = loads(att["build"]) if att is not None else None
@@ -893,11 +902,14 @@ class Pipeline:
             try:
                 fp = self._compile(r, run=False).fingerprint  # a script isn't run to check it
             except PipelineError as e:
-                errors[r["id"]] = e.message
+                if "waiting_on" in e.details:
+                    waiting[r["id"]] = e.details["waiting_on"]
+                else:
+                    errors[r["id"]] = e.message
                 continue
             if fp != prev.get("fingerprint"):
                 stale.append(r["id"])
-        return stale, errors
+        return stale, errors, waiting
 
     # ------------------------------------------------------------------ style lock & gates
 
@@ -990,30 +1002,52 @@ class Pipeline:
             }, indent=2), encoding="utf-8")
             (lock_dir / "palette.txt").write_text("\n".join(pal) + "\n", encoding="utf-8")
 
-            rereview = []
+            rereview, recheck = [], []
             if prev:
+                # Same style text, real locks on both sides: a recipe asset the new tokens don't
+                # change can stay approved. That needs compiling, so it happens after this transaction.
+                can_keep = not provisional and not prev["provisional"] and block == (prev["style_block"] or "").strip()
                 for aid, r in rows.items():
                     if aid in hero_ids or r["status"] != APPROVED:
                         continue
                     att = _approved_attempt(c, aid)
-                    if att is not None and (att["style_lock_version"] or 0) < version:
-                        c.execute(
-                            "UPDATE attempts SET decision=NULL, decision_by=NULL, decided_at=NULL, "
-                            "sheet_id=NULL WHERE asset_id=? AND n=?", (aid, att["n"]),
-                        )
-                        c.execute("UPDATE assets SET status=?, updated_at=? WHERE id=?",
-                                  (AWAITING_REVIEW, now, aid))
+                    if att is None or (att["style_lock_version"] or 0) >= version:
+                        continue
+                    built = loads(att["build"]) if att["build"] else None
+                    if can_keep and built:
+                        recheck.append((aid, att["n"], built.get("fingerprint")))
+                    else:
+                        _back_to_review(c, aid, att["n"], now)
                         rereview.append(aid)
             _event(c, now, by, "lock_style", None, version=version, heroes=hero_ids, rereview=rereview,
                    provisional=provisional)
             self._write_manifest(c)
+        unchanged: list[str] = []
+        if recheck:
+            old = {x.lower() for x in loads(prev["palette"])}
+            removed = old - {x.lower() for x in pal}
+            same = {aid: self._same_under_lock(rows[aid], fp, removed) for aid, _, fp in recheck}
+            with self.store.tx() as c:
+                for aid, n, _ in recheck:
+                    if c.execute("SELECT status FROM assets WHERE id=?", (aid,)).fetchone()["status"] != APPROVED:
+                        continue
+                    if same[aid]:
+                        c.execute("UPDATE attempts SET style_lock_version=? WHERE asset_id=? AND n=?", (version, aid, n))
+                        unchanged.append(aid)
+                    else:
+                        _back_to_review(c, aid, n, now)
+                        rereview.append(aid)
+                _event(c, now, by, "lock_recheck", None, version=version, unchanged=unchanged, rereview=rereview)
+                self._write_manifest(c)
         out: dict[str, Any] = {"version": version, "provisional": provisional, "heroes": hero_ids,
                                "palette": pal, "references": refs}
         if toks:
             out["tokens"] = toks
         if rereview:
             out["rereview"] = rereview
-        stale, _ = self._stale_report()
+        if unchanged:
+            out["unchanged"] = unchanged
+        stale, *_ = self._stale_report()
         if stale:
             out["stale"] = stale
         if provisional:
@@ -1028,6 +1062,20 @@ class Pipeline:
         else:
             out["next"] = "Non-hero assets are now claimable; every work packet carries this lock."
         return out
+
+    def _same_under_lock(self, row, fingerprint: str | None, removed: set[str]) -> bool:
+        """True when a recipe still builds exactly what was approved and doesn't hard-code a colour the
+        new palette dropped (a raw hex isn't a token, so the fingerprint can't see it go off-palette)."""
+        try:
+            compiled = self._compile(row, run=False)
+        except PipelineError:
+            return False
+        if compiled.fingerprint != fingerprint:
+            return False
+        blobs = [compiled.svg.lower()] if compiled.ext == ".svg" else []
+        if compiled.kind == "script":
+            blobs += [(self.root / f).read_bytes().lower() for f in compiled.inputs if not f.startswith("asset:")]
+        return not any(h.encode() in b for h in removed for b in blobs)
 
     def pass_gate(self, gate_id: int, by: str, notes: str | None = None) -> dict[str, Any]:
         if by != USER:
@@ -1128,10 +1176,12 @@ class Pipeline:
             recipes = sum(1 for r in rows if loads(r["spec"]).get("build"))
         if one is not None:  # stale checks compile recipes, so they run outside the transaction
             if one["spec"].get("build"):
-                stale, errors = self._stale_report([asset_id])
+                stale, errors, waiting = self._stale_report([asset_id])
                 one["stale"] = asset_id in stale
                 if asset_id in errors:
                     one["build_error"] = errors[asset_id]
+                if asset_id in waiting:
+                    one["waiting_on"] = waiting[asset_id]
             return one
         out: dict[str, Any] = {
             "root": str(self.root),
@@ -1147,10 +1197,12 @@ class Pipeline:
             "leases": leases,
         }
         if recipes:
-            stale, errors = self._stale_report()
+            stale, errors, waiting = self._stale_report()
             out["recipes"] = {"assets": recipes, "stale": stale}
             if errors:
                 out["recipes"]["errors"] = errors
+            if waiting:
+                out["recipes"]["waiting"] = waiting
         return out
 
     def history(self, asset_id: str | None = None, limit: int = 200) -> dict[str, Any]:
@@ -1257,6 +1309,12 @@ class Pipeline:
                     "The style lock is provisional, so nothing approved under it is final yet.",
                     hint="Use target='staging' for now; place into the project after the user locks the style.",
                 )
+            gate = _open_gate(c)
+            if target != "staging" and gate:
+                raise PipelineError(
+                    E.GATE_DUE, f"Batch review gate {gate['id']} is due, so the user hasn't signed off on this art.",
+                    hint=f"review_sheet(gate={gate['id']}), show the user, then pass_gate(by='user').",
+                    gate_id=gate["id"])
             rows = {r["id"]: r for r in c.execute("SELECT * FROM assets WHERE in_brief=1 ORDER BY ord")}
             wanted = list(asset_ids) if asset_ids else [a for a, r in rows.items() if r["status"] == APPROVED]
             items, atts, skipped = [], {}, []
@@ -1655,6 +1713,12 @@ def _gate(c, gate_id: int):
     if g is None:
         raise PipelineError(E.GATE_NOT_FOUND, f"No gate {gate_id}.")
     return g
+
+
+def _back_to_review(c, asset_id: str, n: int, now: str) -> None:
+    c.execute("UPDATE attempts SET decision=NULL, decision_by=NULL, decided_at=NULL, sheet_id=NULL "
+              "WHERE asset_id=? AND n=?", (asset_id, n))
+    c.execute("UPDATE assets SET status=?, updated_at=? WHERE id=?", (AWAITING_REVIEW, now, asset_id))
 
 
 def _open_gate(c):

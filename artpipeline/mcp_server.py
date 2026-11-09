@@ -402,7 +402,8 @@ def lock_style(by: Annotated[Literal["user", "agent"], Field(
                    "user's real lock sends it back to review. Never use it to skip a user who is present.")]
                = False) -> CallToolResult:
     """Lock the style after the user approves the heroes. Non-hero work opens; every later work
-    packet carries this lock. Re-locking sends assets approved under the old lock back to review."""
+    packet carries this lock. Re-locking sends assets approved under the old lock back to review, except
+    recipe assets the new tokens don't change (with the style text unchanged), which stay approved."""
     return _call(lambda: _result(_pipeline().lock_style(
         by, style_block, palette=palette, hero_ids=hero_ids, references=references, notes=notes,
         provisional=provisional, tokens=tokens)))

@@ -212,3 +212,35 @@ def test_place_atlases_into_engines(dp, project, tmp_path):
     assert json.loads((sa / "Contents.json").read_text())["info"]["author"] == "xcode"
     with Image.open(sa / "coin-1.imageset" / "coin-1.png") as im:
         assert im.size == (32, 32)
+
+
+def test_status_reports_waiting_not_errors(dp, project):
+    _approve(dp, "coin-1")
+    _approve(dp, "coin-spin")
+    write(project, "art/coin.svg", (project / "art/coin.svg").read_text().replace('height="24"', 'height="20"'))
+    dp.build("main", ["coin-1"])       # coin-1 is back in review, so the sheet can't compile right now
+    rec = dp.status()["recipes"]
+    assert rec["waiting"] == {"coin-spin": "coin-1 (awaiting_review)"} and "errors" not in rec
+    assert dp.status("coin-spin")["waiting_on"] == "coin-1 (awaiting_review)"
+
+
+def test_place_waits_for_an_open_gate_but_staging_doesnt(project, make_pipeline, tmp_path):
+    from conftest import make_manifest, approve, make_png
+    m = make_manifest(n_assets=3, heroes=1)
+    m["settings"] = {"gate_threshold": 2}
+    p = make_pipeline(m)
+    ids = [a["id"] for a in m["assets"]]
+    png = make_png(tmp_path / "g.png")
+    approve(p, ids[0], png, by="user")
+    p.lock_style("user")
+    for aid in ids[1:]:
+        approve(p, aid, png)
+    assert p.status()["open_gate"]
+    gd = tmp_path / "gd"
+    gd.mkdir()
+    (gd / "project.godot").write_text("config_version=5\n")
+    from artpipeline.errors import PipelineError
+    with pytest.raises(PipelineError) as e:
+        p.place("godot", None, gd)
+    assert e.value.code == E.GATE_DUE
+    assert p.place("staging")["placed"] == 3

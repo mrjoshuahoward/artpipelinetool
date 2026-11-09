@@ -10,9 +10,9 @@ from typing import Any
 from artpipeline.build.compose import AssetResolver, compile_compose
 from artpipeline.build.derive import compile_derive
 from artpipeline.build.script import compile_script
-from artpipeline.build.svg import BuildError, Compiled, compile_svg, describe_change
+from artpipeline.build.svg import BuildError, Compiled, DependencyWaiting, compile_svg, describe_change
 
-__all__ = ["AssetResolver", "BuildError", "Compiled", "compile_recipe", "describe_change"]
+__all__ = ["AssetResolver", "BuildError", "Compiled", "DependencyWaiting", "compile_recipe", "describe_change"]
 
 
 def compile_recipe(root: Path, build: dict[str, Any], *, tokens: dict[str, str], asset: dict[str, Any],

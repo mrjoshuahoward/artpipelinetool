@@ -125,6 +125,8 @@ def build_sheets(items: list[SheetItem], out_dir: Path, stem: str, title: str = 
 
 GRID_MAX_EDGE = 1568  # stay under the client's inline downscale limit so tiles stay at true size
 GRID_LABEL_H = 18
+GRID_MAX_TILE = 256   # atlases and screenshots display larger than a grid can hold
+GRID_SMALL_TILE = 128  # bigger tiles are paginated apart from icons and sprites
 
 
 def _grid_cell(it: SheetItem, size: int) -> tuple[int, int]:
@@ -133,22 +135,35 @@ def _grid_cell(it: SheetItem, size: int) -> tuple[int, int]:
     return tile * len(bgs) * 2 + 6, tile + GRID_LABEL_H  # colour + greyscale per background
 
 
+def _grid_size(it: SheetItem) -> int:
+    """The tile size in the grid: the smallest display size, capped so one row of the asset still fits
+    a page (atlases and screenshots display far larger than a grid can show; their strips show them)."""
+    bgs = len(it.backgrounds or DEFAULT_BGS)
+    fits = (GRID_MAX_EDGE - 2 * PAD - 6) // (2 * bgs) - 2 * MARGIN
+    return min(min(it.sizes or DEFAULT_SIZES), GRID_MAX_TILE, fits)
+
+
 def render_grid_pages(items: list[SheetItem], title: str = "") -> list[Image.Image]:
-    """Many assets per image, each at its smallest real display size on every background, in colour
-    and greyscale. Pages stay within GRID_MAX_EDGE so the model sees them unscaled."""
+    """Many assets per image, each at its smallest real display size (capped at GRID_MAX_TILE) on every
+    background, in colour and greyscale. Pages stay within GRID_MAX_EDGE so the model sees them
+    unscaled. Large tiles get their own pages, so one atlas doesn't blow up the cells of every icon."""
     if not items:
         return []
-    size = lambda it: min(it.sizes or DEFAULT_SIZES)  # noqa: E731
-    cw = max(_grid_cell(it, size(it))[0] for it in items) + PAD
-    ch = max(_grid_cell(it, size(it))[1] for it in items) + 8
     header = 34 if title else 8
-    cols = max(1, (GRID_MAX_EDGE - PAD) // cw)
-    rows_per_page = max(1, (GRID_MAX_EDGE - header - PAD) // ch)
-    per_page = cols * rows_per_page
-    chunks = [items[i:i + per_page] for i in range(0, len(items), per_page)]
+    chunks: list[tuple[list[SheetItem], int, int, int]] = []
+    small = [it for it in items if _grid_size(it) <= GRID_SMALL_TILE]
+    large = [it for it in items if _grid_size(it) > GRID_SMALL_TILE]
+    for group in (small, large):
+        if not group:
+            continue
+        cw = max(_grid_cell(it, _grid_size(it))[0] for it in group) + PAD
+        ch = max(_grid_cell(it, _grid_size(it))[1] for it in group) + 8
+        cols = max(1, (GRID_MAX_EDGE - PAD) // cw)
+        per_page = cols * max(1, (GRID_MAX_EDGE - header - PAD) // ch)
+        chunks += [(group[i:i + per_page], cw, ch, cols) for i in range(0, len(group), per_page)]
     f, fs = _font(12), _font(11)
     pages = []
-    for k, chunk in enumerate(chunks, 1):
+    for k, (chunk, cw, ch, cols) in enumerate(chunks, 1):
         n_rows = -(-len(chunk) // cols)
         W = PAD + min(cols, len(chunk)) * cw
         H = header + n_rows * ch + PAD
@@ -158,10 +173,12 @@ def render_grid_pages(items: list[SheetItem], title: str = "") -> list[Image.Ima
             t = f"{title}  (page {k}/{len(chunks)})" if len(chunks) > 1 else title
             d.text((PAD, 10), t, fill=(30, 30, 30), font=_font(14))
         for i, it in enumerate(chunk):
-            s = size(it)
+            s = _grid_size(it)
             x0 = PAD + (i % cols) * cw
             y0 = header + (i // cols) * ch
             label = it.label + (f"  ·  {it.sublabel}" if it.sublabel else "")
+            if s < min(it.sizes or DEFAULT_SIZES):
+                label = f"{label[:40]}  ·  shown at {s}px"
             d.text((x0, y0), label[:60], fill=(20, 20, 20), font=f if not it.sublabel else fs)
             x = x0
             y = y0 + GRID_LABEL_H

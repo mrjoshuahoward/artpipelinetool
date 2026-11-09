@@ -53,6 +53,14 @@ class BuildError(Exception):
     pass
 
 
+class DependencyWaiting(BuildError):
+    """A recipe needs another asset's approved output, and that asset isn't approved right now."""
+
+    def __init__(self, message: str, waiting_on: str):
+        super().__init__(message)
+        self.waiting_on = waiting_on
+
+
 @dataclass
 class Compiled:
     svg: bytes                      # the built file's bytes (SVG, or PNG for derive)

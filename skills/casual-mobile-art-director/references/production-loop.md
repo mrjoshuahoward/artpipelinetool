@@ -30,7 +30,7 @@ Then call `init(brief_path, root)`. It is safe to re-run after editing the brief
 - Work packets, the manifest and `handback` all mark the work provisional. Open the hand-back with it: "the style is provisionally locked by me; nothing is final until you approve the hero sheet."
 - Never lock provisionally when the user is present or reachable. Ask them instead. If they only said "just make them" without saying they're away, make the heroes and stop at the lock.
 
-Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review.
+Re-locking later (a palette change, say) bumps the lock version and sends assets approved under the old lock back to review. Recipe assets stay approved when the new tokens don't change them and the style text is the same (`unchanged` in the result). Registered files always go back, because nothing proves they still fit.
 
 ## 2. Choose the production route per asset
 
