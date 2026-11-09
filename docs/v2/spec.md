@@ -178,7 +178,7 @@ The **CLI** mirrors the tools one to one (`artpipeline claim --n 4 --agent sub-2
 
 Before any write, existing files are moved to `superseded/` with a timestamp, unless `confirm_overwrite` is set. Every placed file is recorded in the manifest. A file the pipeline wrote itself (tracked by hash) is replaced in place, so placing again is idempotent; an imageset folder is the pipeline's entirely, so stray files in it are moved aside too. Engine targets are refused while the style lock is provisional.
 
-Verified (2026-11-08, B3): the Godot output loads in Godot 4.7 headless. The `SpriteFrames` resource plays 4 frames at 10 fps, looping, with a repeated frame. Region and trim margin come back right, and a trimmed frame reports its original 128×128 size. A catalog with two `.spriteatlas` folders compiles with `actool` with no warnings into packed images. Phaser atlas loading has not been run in a browser yet.
+Verified (2026-11-08, B3): the Godot output loads in Godot 4.7 headless. The `SpriteFrames` resource plays 4 frames at 10 fps, looping, with a repeated frame. Region and trim margin come back right, and a trimmed frame reports its original 128×128 size. A catalog with two `.spriteatlas` folders compiles with `actool` with no warnings into packed images. Phaser atlas loading was verified in WebKit on 2026-11-08 on a real game (a test copy of Puff Pals): `load.pack` loads the atlas, all 12 trimmed frames draw pixel-identical to their source PNGs, and play and merges work from it.
 
 Verified (2026-11-05): an app icon and two `ui_icon_svg` assets placed into a scratch copy of Sorting Line's `Assets.xcassets` compile with `actool` with no warnings, and a minimal SwiftUI app on the iOS 27 simulator shows the icon on the home screen and loads both imagesets at @3x.
 
@@ -269,7 +269,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 14. Building assets (2.1)
 
-Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validation on a new project pending** · branch `v2.1`
+Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validated on two sample projects; release pending** · branch `v2.1`
 
 ### Why
 
@@ -331,3 +331,8 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
 
 - Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored), derive plus atlas placement (`tests/test_derive.py`), and script recipes (`tests/test_script.py`).
 - After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.
+- **Sample runs (2026-11-08):**
+  - *Lantern Drift* (new Godot game, all four recipe kinds): runs in Godot 4.7 with no import errors. Changing one token made exactly the 8 assets using it stale, and two `build(stale=true)` rounds carried the change through the composites.
+  - *Puff Pals* (a test copy of a shipping Phaser 4 game): script recipes fitted art to the game's real colliders, and `derive` plus `place --target phaser` worked in WebKit.
+  - The billed with/without-plugin eval has not been run.
+- **Open finding:** a `script` recipe's fingerprint includes `asset.destination`, so moving a destination marks the asset stale with the vague note "recipe output changed". The rebuild correctly sees the same file and keeps the approval.
