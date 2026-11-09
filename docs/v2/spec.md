@@ -269,7 +269,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 14. Building assets (2.1)
 
-Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validated on two sample projects; release pending** · branch `v2.1`
+Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validated on two sample projects; released as 2.1.0** · `main`
 
 ### Why
 
@@ -335,4 +335,4 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
   - *Lantern Drift* (new Godot game, all four recipe kinds): runs in Godot 4.7 with no import errors. Changing one token made exactly the 8 assets using it stale, and two `build(stale=true)` rounds carried the change through the composites.
   - *Puff Pals* (a test copy of a shipping Phaser 4 game): script recipes fitted art to the game's real colliders, and `derive` plus `place --target phaser` worked in WebKit.
   - The billed with/without-plugin eval has not been run.
-- **Open finding:** a `script` recipe's fingerprint includes `asset.destination`, so moving a destination marks the asset stale with the vague note "recipe output changed". The rebuild correctly sees the same file and keeps the approval.
+- A `script` recipe's fingerprint and job leave out `asset.destination`, so moving a file doesn't make it stale; editing the subject or group is reported by name.

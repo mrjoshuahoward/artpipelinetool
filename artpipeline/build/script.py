@@ -156,13 +156,15 @@ def compile_script(
         p = assets(aid)  # BuildError when it isn't approved
         dep_files[aid] = p
         hashes[f"asset:{aid}"] = _sha(p)
+    # Where the file is placed doesn't change what gets drawn, so the destination stays out of the job and the fingerprint.
+    identity = {k: v for k, v in asset.items() if k != "destination"}
     ext = ".svg" if vector else ".png"
     str_params = {k: (str(v).lower() if isinstance(v, bool) else str(v)) for k, v in sorted(params.items())}
     key = {"builder": BUILDER_VERSION, "inputs": hashes, "tokens": given, "params": str_params,
-           "asset": asset, "master": list(master), "pixel_art": pixel_art, "ext": ext}
+           "asset": identity, "master": list(master), "pixel_art": pixel_art, "ext": ext}
     fingerprint = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
     compiled = Compiled(svg=b"", fingerprint=fingerprint, inputs=dict(sorted(hashes.items())), tokens=given,
-                        params=str_params, kind="script", builder=BUILDER_VERSION, ext=ext)
+                        params=str_params, kind="script", builder=BUILDER_VERSION, ext=ext, asset=identity)
     if not run:
         return compiled
 
@@ -185,7 +187,7 @@ def compile_script(
         out.parent.mkdir()
         job_file = Path(tmp) / "job.json"
         job_file.write_text(json.dumps({
-            "asset": asset, "params": params, "tokens": given, "master": list(master),
+            "asset": identity, "params": params, "tokens": given, "master": list(master),
             "pixel_art": pixel_art, "assets": dep_paths, "output": str(out), "format": ext[1:],
         }, indent=2, sort_keys=True))
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",

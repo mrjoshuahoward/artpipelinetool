@@ -74,6 +74,7 @@ class Compiled:
     ext: str = ".svg"               # the built file's type (derive builds a .png)
     atlas: dict[str, Any] | None = None   # derive: frame rectangles, cell, animation
     output: str | None = None       # script: sha256 of the bytes it wrote (the fingerprint hashes inputs)
+    asset: dict[str, Any] | None = None   # script: the asset fields the script was given
 
     def record(self) -> dict[str, Any]:
         out = {"kind": self.kind, "builder": self.builder, "fingerprint": self.fingerprint,
@@ -84,6 +85,8 @@ class Compiled:
             out["atlas"] = self.atlas
         if self.output:
             out["output"] = self.output
+        if self.asset:
+            out["asset"] = self.asset
         return out
 
 
@@ -479,6 +482,9 @@ def describe_change(old: dict[str, Any] | None, new: dict[str, Any]) -> str:
     par = [f"{k}={v}" for k, v in np_.items() if op.get(k) != v] + [f"-{k}" for k in op if k not in np_]
     if par:
         bits.append("params " + ", ".join(par))
+    oa, na = old.get("asset"), new.get("asset")
+    if oa and na and oa != na:
+        bits.append("edited the asset's " + ", ".join(k for k in sorted(set(oa) | set(na)) if oa.get(k) != na.get(k)))
     if not bits and old.get("builder") != new.get("builder"):
         bits.append(f"builder {old.get('builder')}→{new.get('builder')}")
     return "; ".join(bits) or "recipe output changed"

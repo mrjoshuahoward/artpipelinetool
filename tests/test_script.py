@@ -208,3 +208,17 @@ def test_dry_run_flags_nondeterministic_scripts(sp, project):
                                " + f'<rect y=\"27\" width=\"{random.randint(1, 10**9) % 60 + 1}\" height=\"10\" fill=\"#F2C14E\"/></svg>')\n")
     r = sp.build("main", ["bar-thin"], dry_run=True)["results"][0]
     assert any("aren't reproducible" in w for w in r["warn"])
+
+
+def test_moving_a_file_is_not_a_change_but_editing_the_subject_is(tmp_path):
+    write(tmp_path, "art/s.py", "from artpipeline.build.script import job\nj = job()\nassert 'destination' not in j['asset']\n"
+                                "open(j['output'], 'w').write('<svg xmlns=\"http://www.w3.org/2000/svg\"/>')\n")
+
+    def build(**asset):
+        return compile_recipe(tmp_path, {"kind": "script", "script": "art/s.py"}, tokens=TOKENS, asset={"id": "a", **asset},
+                              master=(64, 64), vector=True)
+
+    a = build(subject="Bar", destination="ui/a.svg")
+    assert build(subject="Bar", destination="moved/b.svg").fingerprint == a.fingerprint
+    b = build(subject="Longer bar", destination="ui/a.svg")
+    assert b.fingerprint != a.fingerprint and describe_change(a.record(), b.record()) == "edited the asset's subject"
