@@ -269,7 +269,7 @@ A processing refusal, such as an upscale, is a check failure, so it feeds the re
 
 ## 14. Building assets (2.1)
 
-Status: **B1 done (2026-11-07), B2 and B3 done (2026-11-08)** · branch `v2.1`
+Status: **B1 done (2026-11-07), B2–B4 done (2026-11-08); validation on a new project pending** · branch `v2.1`
 
 ### Why
 
@@ -295,7 +295,7 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
 | `svg` | **B1** ✅ | `source` and/or `template`. Substitutes `{{tokens.x}}`, `{{params.x}}` and `{{asset.id}}`; a param value `$x` names a token. Fills `<ap:slot>`/`<ap:part>`, inlines `<ap:include>`, embeds local `<image>` files, and expands the shape library (`ap:star`, `polygon`, `ring`, `arc`, `gear`, `burst`) to plain SVG. Rendered by the bundled resvg. |
 | `compose` | **B2** ✅ | A layer stack on a canvas the size of the master: `svg` (a recipe file), `image` (local raster/SVG), `asset` (another asset's approved output), `text`, `fill`. Per-layer box, fit, rounded clip, opacity, rotation and drop shadow. Compiles to one SVG, so raster classes render through the same resvg pass. For store screenshots, key art and layered icons. |
 | `derive` | **B3** ✅ | Packs other assets' approved outputs (`frames`, or `frames_group`) into one PNG the size of the class master (preset `sprite_atlas`, 2048²). `layout: grid` gives a sprite sheet: frames centred in equal cells, with `columns`. `layout: pack` gives an atlas: frames trimmed of transparent borders, then shelf-packed tallest first. Also `cell` (scale every frame to fit; vectors need it; pixel art scales only by whole numbers), `padding`, `extrude` (repeat edge pixels) and `animation: {fps, loop, sequence}`, where the sequence may repeat frames. The frame table is part of the build record and the manifest, and `place` writes it per engine (§7). The fingerprint hashes the pixels plus the table, not the PNG encoding. The class must be raster with no trim, remove_bg or renditions, because those would move the frames. |
-| `script` | B4 | An agent-written script with declared inputs and outputs, hashed. The fallback for anything the other kinds can't express. |
+| `script` | **B4** ✅ | A committed program (`script`, plus `inputs`: paths or globs) run in an empty temp directory holding only the script and its declared inputs, so an undeclared read fails and the recorded inputs are complete. `.py` runs with artpipeline's Python; `.sh` with `/bin/sh`. The job JSON (argv[1], `$ARTPIPELINE_JOB`, `artpipeline.build.script.job()`) gives asset, params, `tokens` (only those listed, else all), master, approved `assets` dependencies and the `output` path (`.svg` for vector classes, else `.png`). Fixed environment (TZ=UTC, PYTHONHASHSEED=0, SOURCE_DATE_EPOCH=0, no caller env), `timeout` 60 s (max 600). The fallback for anything the other kinds can't express. |
 
 ### Text (B2)
 
@@ -319,11 +319,12 @@ In the 2.0 badges eval, every one of the 46 badges was drawn in code. The agent 
   - Stale rebuilds are described automatically ("rebuilt: tokens gold #F2C14E→#F5C451").
 - **Stale tracking.** `status()` reports `recipes.stale` (plus compile errors), and `status(asset_id)` reports `stale`. `lock_style` returns the assets its change made stale. An unused token never makes an asset stale.
 - **`dry_run`** compiles and checks with the asset's real processing and returns a strip. It changes no state and works on any asset, including non-heroes before the lock.
-- **Dependencies (compose `asset` layers, derive `frames`).** An `asset` layer or frame embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
+- **Dependencies (compose `asset` layers, derive `frames`, script `assets`).** An `asset` layer or frame embeds the dependency's approved processed file and records its hash as input `asset:<id>`. It refuses to build (`BUILD_FAILED`) unless that asset is approved or placed. Re-approving the dependency makes the composite stale ("rebuilt: first-bloom re-approved"). The brief rejects unknown layer assets and cycles. The build record also carries a hash of the layer stack as written, so a brief-only layer edit is described as "edited the layers in the brief".
+- **Script fingerprints hash inputs, not output.** The script, its declared files, dependencies, listed tokens, params, asset fields and master, so `status()` and stale reports never run code. The output's sha256 is recorded as `output`. When a stale script asset rebuilds to the same bytes as its approved or awaiting-review attempt, `build` refreshes that attempt's record (event `rebuild_same`) and returns `up_to_date` instead of reopening it. `dry_run` runs a script twice and warns when the bytes differ. Scripts are project code run only on `build`/`dry_run`, like a Makefile; they are not sandboxed beyond the working directory and environment.
 - **Failures:** a recipe that doesn't compile is `BUILD_FAILED`, and no attempt is used. An asset without a recipe is `NO_RECIPE`.
 - **Schema v4:** adds `attempts.build` and `style_locks.tokens`, migrated in place from v3.
 
 ### Validation plan
 
-- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored), and derive plus atlas placement (`tests/test_derive.py`).
+- Unit tests cover the compiler, schema, pipeline, MCP and CLI (`tests/test_build.py`), text layout and compose (`tests/test_compose.py`, using a font built on the fly with fontTools so nothing is vendored), derive plus atlas placement (`tests/test_derive.py`), and script recipes (`tests/test_script.py`).
 - After B4, an eval will run on **a new test project chosen by the user, not Sorting Line**: build a set from recipes, change one token, rebuild with a single `build(stale=true)`, and compare with and without the plugin. The eval is billed, so ask first.

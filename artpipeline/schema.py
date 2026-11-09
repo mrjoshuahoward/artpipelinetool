@@ -153,9 +153,10 @@ class BuildSpec(_Strict):
     kind 'svg': an SVG source and/or a shared template with <ap:slot/>, filled with params and the
     style's named colour tokens. kind 'compose': a stack of layers (SVG recipes, images, other
     approved assets, text, fills) on a canvas the size of the master. kind 'derive': other approved
-    assets packed into one sprite sheet or texture atlas the size of the master."""
+    assets packed into one sprite sheet or texture atlas the size of the master. kind 'script': a
+    committed program that writes the asset, run with only its declared inputs (build/script.py)."""
 
-    kind: Literal["svg", "compose", "derive"] = "svg"
+    kind: Literal["svg", "compose", "derive", "script"] = "svg"
     source: str | None = None
     template: str | None = None
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
@@ -170,8 +171,22 @@ class BuildSpec(_Strict):
     extrude: int = Field(default=0, ge=0, le=8)                          # derive: repeat edge pixels
     trim: bool | None = None                    # derive: crop transparent borders (default: pack only)
     animation: Animation | None = None                                   # derive: frames play in order
+    script: str | None = None                   # script: the program (.py runs with artpipeline's Python)
+    inputs: list[str] = Field(default_factory=list)  # script: every file it reads (paths or globs)
+    assets: list[str] = Field(default_factory=list)  # script: approved assets it reads
+    tokens: list[str] | None = None             # script: tokens it uses (default: all of them)
+    timeout: int = Field(default=60, ge=1, le=600)   # script: seconds
 
-    @field_validator("source", "template")
+    @field_validator("inputs")
+    @classmethod
+    def _input_paths(cls, v: list[str]) -> list[str]:
+        for x in v:
+            pp = PurePosixPath(x)
+            if pp.is_absolute() or ".." in pp.parts or not x:
+                raise ValueError("script inputs are relative to the pipeline root, without '..'")
+        return v
+
+    @field_validator("source", "template", "script")
     @classmethod
     def _paths(cls, v: str | None) -> str | None:
         return _recipe_path(v)
@@ -185,6 +200,17 @@ class BuildSpec(_Strict):
         return BuildSpec(**pick, params={**base.params, **self.params})
 
     def problem(self) -> str | None:
+        script_set = bool(self.script or self.inputs or self.assets or self.tokens is not None
+                          or self.timeout != 60)
+        if self.kind != "script" and script_set:
+            return "script, inputs, assets, tokens and timeout belong to kind 'script'"
+        if self.kind == "script":
+            if not self.script:
+                return "kind 'script' needs script: <path>"
+            if (self.source or self.template or self.layers or self.background or self.frames
+                    or self.frames_group or self.animation or self.cell or self.columns):
+                return "kind 'script' runs its script; it takes no source, template, layers or frames"
+            return None
         derive_set = bool(self.frames or self.frames_group or self.animation or self.cell or self.columns)
         if self.kind != "derive" and derive_set:
             return "frames, frames_group, cell, columns and animation belong to kind 'derive'"
@@ -338,18 +364,18 @@ class BriefManifest(_Strict):
             if b is not None and b.animation and (extra := sorted(set(b.animation.sequence) - set(b.frames))):
                 raise ValueError(f"asset '{a.id}': animation.sequence names {extra}, which are not frames")
         uses = {a.id: [ly.asset for ly in a.build.layers if ly.asset] + list(a.build.frames)
-                for a in self.assets if a.build}
+                + list(a.build.assets) for a in self.assets if a.build}
         for aid, deps in uses.items():
             for d in deps:
                 if d not in seen:
-                    raise ValueError(f"asset '{aid}': layer or frame asset '{d}' is not in the brief")
+                    raise ValueError(f"asset '{aid}': layer, frame or script asset '{d}' is not in the brief")
         for aid in uses:  # a compose asset can't (indirectly) contain itself
             stack, path = [aid], set()
             while stack:
                 cur = stack.pop()
                 for d in uses.get(cur, []):
                     if d == aid:
-                        raise ValueError(f"asset '{aid}' contains itself through its layers or frames")
+                        raise ValueError(f"asset '{aid}' contains itself through its layers, frames or script assets")
                     if d not in path:
                         path.add(d)
                         stack.append(d)

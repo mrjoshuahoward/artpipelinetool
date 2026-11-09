@@ -701,7 +701,7 @@ class Pipeline:
             try:
                 compiled = self._compile(rows[aid])
                 if dry_run:
-                    results.append(self._dry_run(aid, compiled))
+                    results.append(self._dry_run(aid, compiled, rows[aid]))
                 else:
                     results.append(self._build_one(aid, agent, compiled,
                                                    changes.get(aid, change_from_previous), rights, notes))
@@ -722,7 +722,7 @@ class Pipeline:
             out["note"] = (skipped_note + " " if skipped_note else "") + "Nothing to build."
         return out
 
-    def _compile(self, r):
+    def _compile(self, r, run: bool = True):
         spec = loads(r["spec"])
         recipe = spec.get("build")
         if not recipe:
@@ -740,7 +740,8 @@ class Pipeline:
                     raise BuildError("an atlas must be a raster class without trim, remove_bg or renditions "
                                      "(they would move the frames); use class sprite_atlas or override them")
             return compile_recipe(self.root, recipe, tokens=tokens, asset=asset, master=tuple(klass["master"]),
-                                  assets=self._approved_file, pixel_art=bool(klass.get("pixel_art")))
+                                  assets=self._approved_file, pixel_art=bool(klass.get("pixel_art")),
+                                  vector=AssetClass.model_validate(klass).is_vector, run=run)
         except BuildError as e:
             raise PipelineError(E.BUILD_FAILED, f"'{r['id']}': {e}",
                                 hint="Fix the recipe and build again; no attempt was used.") from None
@@ -769,9 +770,13 @@ class Pipeline:
         f.write_bytes(compiled.svg)
         return f
 
-    def _dry_run(self, asset_id: str, compiled) -> dict[str, Any]:
+    def _dry_run(self, asset_id: str, compiled, row) -> dict[str, Any]:
         f = self._built_file(asset_id, compiled)
         res = self.preflight(asset_id, f)
+        if compiled.kind == "script" and self._compile(row).output != compiled.output:
+            res["warn"] = list(res["warn"]) + [
+                "the script wrote different bytes on a second run; its builds aren't reproducible "
+                "(seed any randomness, avoid timestamps and unordered iteration)"]
         with self.store.tx() as c:
             r = _asset(c, asset_id)
             klass = AssetClass.model_validate(loads(r["cls"]))
@@ -800,6 +805,17 @@ class Pipeline:
                 raise PipelineError(E.INVALID_STATE, f"'{asset_id}' is {status}.", hint=_STATE_HINTS[status])
             if same and status in (AWAITING_REVIEW, APPROVED, PLACED):
                 raise PipelineError(E.UP_TO_DATE, f"Attempt {latest['n']} already is this build ({status}).")
+            if (status in (AWAITING_REVIEW, APPROVED, PLACED) and record.get("output")
+                    and prev and prev.get("output") == record["output"]):
+                # A script whose inputs changed but which writes the same file: nothing to review.
+                c.execute("UPDATE attempts SET build=? WHERE asset_id=? AND n=?",
+                          (dumps(record), asset_id, latest["n"]))
+                why = describe_change(prev, record)
+                _event(c, now, agent, "rebuild_same", asset_id, n=latest["n"], why=why)
+                self._write_manifest(c)
+                return {"asset_id": asset_id, "status": "up_to_date", "attempt": latest["n"],
+                        "message": f"The script's inputs changed ({why}) but it writes the same file as attempt "
+                                   f"{latest['n']}; its record was refreshed and it stays {status}."}
             if same:
                 why = {"failed_checks": "failed its checks", "rejected": "was rejected"}.get(latest["decision"],
                                                                                          "was built from it")
@@ -875,7 +891,7 @@ class Pipeline:
             if not prev:
                 continue
             try:
-                fp = self._compile(r).fingerprint
+                fp = self._compile(r, run=False).fingerprint  # a script isn't run to check it
             except PipelineError as e:
                 errors[r["id"]] = e.message
                 continue

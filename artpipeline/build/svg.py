@@ -65,6 +65,7 @@ class Compiled:
     layers: str | None = None       # compose: sha256 of the layer stack as written in the brief
     ext: str = ".svg"               # the built file's type (derive builds a .png)
     atlas: dict[str, Any] | None = None   # derive: frame rectangles, cell, animation
+    output: str | None = None       # script: sha256 of the bytes it wrote (the fingerprint hashes inputs)
 
     def record(self) -> dict[str, Any]:
         out = {"kind": self.kind, "builder": self.builder, "fingerprint": self.fingerprint,
@@ -73,6 +74,8 @@ class Compiled:
             out["layers"] = self.layers
         if self.atlas:
             out["atlas"] = self.atlas
+        if self.output:
+            out["output"] = self.output
         return out
 
 

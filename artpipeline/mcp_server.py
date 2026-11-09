@@ -49,11 +49,12 @@ Assets with a `build:` recipe in the brief are built by artpipeline itself: writ
 files (SVG with {{tokens.name}} colours, <ap:slot/> templates, <ap:star>/<ap:gear>/... shapes,
 <ap:text font=...> drawn from a committed font; or kind: compose layer stacks for store screenshots and
 key art, which can layer other approved assets; or kind: derive to pack approved frames into a sprite
-sheet or texture atlas, which place() writes as engine atlas data), then
+sheet or texture atlas, which place() writes as engine atlas data; or, when none of those fits, kind: script,
+a committed program run with only its declared inputs), then
 build(asset_ids | group) — it claims, compiles, registers and checks in one call (dry_run=true to
 iterate for free). After a recipe, template or token change, build(stale=true) rebuilds every
 affected asset for review (including compose/derive assets whose layer or frame was re-approved). Don't write
-throwaway generator scripts for recipe assets.
+throwaway generator scripts: put the drawing in a recipe, or commit the script as a kind: script recipe.
 4. place(target=...) writes approved art into the game project (xcassets, godot, phaser) only when
    the user asks for it; a read-only or unknown project gets target="staging" (ART-INSTALL.md).
 5. handback() at the end. by="user" means the user said so in this conversation; never set it on
@@ -321,7 +322,8 @@ def build(
     asset_ids: Annotated[list[str] | None, Field(description="Assets to build (each needs a build: recipe)")] = None,
     group: Annotated[str | None, Field(description="Build every buildable asset in this group")] = None,
     stale: Annotated[bool, Field(description="Only assets whose recipe output changed since their last "
-                                 "build (edited source/template/include/font, layers, params, token colours, or a re-approved layer asset)")] = False,
+                                 "build (edited source/template/include/font/script input, layers, params, token colours, or a re-approved "
+                                 "layer, frame or script asset)")] = False,
     change_from_previous: Annotated[str | None, Field(
         description="Required when rebuilding after a rejection or failed checks: what you changed and why. "
         "The recipe diff is appended automatically")] = None,
@@ -334,10 +336,12 @@ def build(
     preview: Annotated[bool, Field(description="Show the passing ones inline (counts as review)")] = True,
     layout: Layout = "auto",
 ) -> CallToolResult:
-    """Build assets from their recipes: artpipeline compiles each recipe to SVG (named colours from the
-    style lock), claims or reopens the asset, registers the result as an attempt with the recipe as
-    provenance, processes and checks it. Recipes are committed files, so the set can be rebuilt any
-    time; a rebuild that would produce the same file is refused."""
+    """Build assets from their recipes: artpipeline compiles each recipe (svg, compose and derive in
+    process; script by running the committed script with only its declared inputs), using named colours
+    from the style lock, claims or reopens the asset, registers the result as an attempt with the recipe
+    as provenance, processes and checks it. Recipes are committed files, so the set can be rebuilt any
+    time; a rebuild that would produce the same file is refused, and a script that writes the same file
+    again just refreshes its record."""
     def go():
         p = _pipeline()
         out = p.build(agent, asset_ids, group=group, stale=stale, change_from_previous=change_from_previous,

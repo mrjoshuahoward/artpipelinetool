@@ -144,4 +144,24 @@ Packs other assets' **approved** outputs into one PNG the size of the class mast
 - If the frames don't fit, the build says what size they need. The class can't trim, remove backgrounds or make renditions, because those would move the frames.
 - `place` writes the frame table for the engine: Phaser atlas JSON and an `atlas` pack entry; Godot `AtlasTexture` per frame plus `SpriteFrames` for animations; an Xcode `.spriteatlas`. Staging writes `<name>.json` beside the sheet.
 
-An `asset` layer builds only once that asset is approved (otherwise `BUILD_FAILED`, no attempt used). The same goes for derive frames. When the layered asset or frame is rebuilt and approved again, the compose or derive asset becomes stale, so a palette change flows through as: `build(stale=true)` → approve the rebuilt parts → `build(stale=true)` again for the composites.
+### `kind: script`: the fallback
+
+When `svg`, `compose` and `derive` can't express an asset (procedural noise, a custom raster effect, an existing drawing script), commit a script and let artpipeline run it. Prefer the other kinds: their recipes stay readable and their stale tracking is exact.
+
+```yaml
+groups:
+  terrain: {build: {kind: script, script: art-src/scripts/terrain.py,
+                    inputs: [art-src/scripts/lib/*.py, art-src/textures/*.png], tokens: [grass, soil]}}
+assets:
+  - {id: tile-meadow, class: tile, subject: Meadow tile, acceptance_criteria: [Tiles seamlessly],
+     destination: tiles/meadow.png, group: terrain, build: {params: {seed: 7, density: 0.4}}}
+```
+
+- The script runs in an empty temp directory holding **only** the script and its declared `inputs` (paths or globs), at the same relative paths. A file it reads but didn't declare isn't there, and the build fails saying so, so the recorded inputs are complete.
+- `.py` runs with artpipeline's own Python, so Pillow, resvg-py and `artpipeline` are importable. `.sh` runs with `/bin/sh`; anything else must be executable.
+- The job: `from artpipeline.build.script import job; j = job()` (or read the JSON file at `argv[1]`). It holds `asset` (id, subject, group, destination), `params`, `tokens` (only those listed in `tokens:`, or all when omitted), `master`, `pixel_art`, `assets` (id → path of each approved dependency listed in `assets:`) and `output`, the file to write: `.svg` for vector classes, else `.png`.
+- The environment is fixed (TZ=UTC, PYTHONHASHSEED=0, SOURCE_DATE_EPOCH=0, HOME is the temp dir), with no secrets from the caller. `timeout` defaults to 60 s (max 600). Don't use the network.
+- **Staleness hashes the inputs, not the output,** so `status()` never runs a script. Listing `tokens:` keeps unrelated palette edits from making it stale. If an edited script still writes the same file, `build` refreshes the record and the asset stays approved.
+- **Make it deterministic:** seed randomness from a param, and don't use timestamps or set ordering. `build(dry_run=true)` runs a script twice and warns when the bytes differ.
+
+An `asset` layer builds only once that asset is approved (otherwise `BUILD_FAILED`, no attempt used). The same goes for derive frames and script `assets`. When the layered asset or frame is rebuilt and approved again, the compose or derive asset becomes stale, so a palette change flows through as: `build(stale=true)` → approve the rebuilt parts → `build(stale=true)` again for the composites.
