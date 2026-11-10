@@ -16,7 +16,7 @@ A Claude Code plugin that lets an agent produce a full set of casual-mobile game
 
 Assets reach the pipeline in two ways:
 - **artpipeline builds them from recipes (new in 2.1).** Everything runs locally, with no network.
-- **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender. artpipeline doesn't call AI image generators itself (planned for 2.2).
+- **The agent produces them with whatever fits:** connected generators, VectorCraft/PhotoCraft, Canva, Blender. artpipeline doesn't call AI image generators itself; that may come later. 
 
 Either way, artpipeline records, processes, checks and gates the result.
 
